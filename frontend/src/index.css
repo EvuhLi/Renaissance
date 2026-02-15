@@ -6,17 +6,33 @@
   font-weight: 400;
 }
 
+html {
+  width: 100%;
+  overflow-x: hidden;
+}
+
 body {
   margin: 0;
   padding: 0;
   width: 100%;
   min-height: 100vh;
-  background-color: #f4ecd8; /* Your tan color */
+  background-color: #f4ecd8;
+  overflow-x: hidden;
 }
 
 #root {
   width: 100%;
-  margin: 0;
-  padding: 0;
-  text-align: left; /* Fixes the centered text default */
+  max-width: 100vw;
+  overflow-x: hidden;
+  text-align: left;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+img, video, canvas, svg {
+  max-width: 100%;
+  height: auto;
+  display: block;
 }

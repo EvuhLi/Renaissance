@@ -7,14 +7,23 @@ import LoginPage from "./LoginPage";
 import ProfilePage from "./ProfilePage";
 
 const GRADIENT = "linear-gradient(90deg, #3dd5f3, #b14dff)";
+const NAV_HEIGHT = 56; // keep content from hiding under fixed nav
 
 function App() {
   const [open, setOpen] = useState(false);
 
   return (
     <BrowserRouter>
+      {/* FIXED NAVBAR */}
       <nav
         style={{
+          position: "fixed",
+          top: 0,
+          left: 0,
+          right: 0,
+          zIndex: 1000,
+
+          height: `${NAV_HEIGHT}px`,
           padding: "10px 14px",
           borderBottom: "1px solid rgba(0,0,0,0.08)",
           display: "flex",
@@ -81,12 +90,23 @@ function App() {
         </div>
       </nav>
 
+<<<<<<< HEAD
       <Routes>
         <Route path="/" element={<LandingPage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/profile" element={<ProfilePage />} />
         <Route path="/profile/:artistId" element={<ProfilePage />} />
       </Routes>
+=======
+      {/* push page content below the fixed navbar */}
+      <div style={{ paddingTop: `${NAV_HEIGHT}px` }}>
+        <Routes>
+          <Route path="/" element={<LandingPage />} />
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="/profile" element={<ProfilePage />} />
+        </Routes>
+      </div>
+>>>>>>> 29138ad (update landing/login UI)
     </BrowserRouter>
   );
 }
