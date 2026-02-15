@@ -10,6 +10,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@huggingface/inference": "^4.13.12",
+    "exifreader": "^4.36.1",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },
