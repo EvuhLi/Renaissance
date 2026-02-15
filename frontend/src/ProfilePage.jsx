@@ -55,7 +55,7 @@ const ProfilePage = () => {
   const [newDescription, setNewDescription] = useState("");
   const [newTags, setNewTags] = useState("");
   const [newImageFile, setNewImageFile] = useState(null);
-
+  const [newTitle, setNewTitle] = useState("");
   const toggleButton = async (postId) => {
     const wasLiked = !!likedPosts[postId];
     const delta = wasLiked ? -1 : 1;
@@ -211,6 +211,7 @@ const ProfilePage = () => {
         likes: 0,
         comments: [],
         url: cloakedUrl,
+        title: newTitle.trim() || undefined,
         description: newDescription.trim() || undefined,
         tags: tagsArray,
         date: new Date().toISOString(),
@@ -309,6 +310,15 @@ const ProfilePage = () => {
               </button>
             </div>
             <div style={styles.newPostBody}>
+              <label style={styles.newPostLabel}>Title</label>
+              <input
+                type="text"
+                value={newTitle}
+                onChange={(e) => setNewTitle(e.target.value)}
+                style={styles.newPostInput}
+                placeholder="Give your artwork a title..."
+              />
+
               <label style={styles.newPostLabel}>Description</label>
               <textarea
                 value={newDescription}

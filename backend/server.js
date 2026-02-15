@@ -21,7 +21,36 @@ if (!MONGODB_URI) {
 } else {
   mongoose
     .connect(MONGODB_URI)
-    .then(() => console.log('MongoDB connected'))
+    .then(async () => {
+      console.log('MongoDB connected');
+      try {
+        const [titleResult, descResult, tagsResult] = await Promise.all([
+          Post.updateMany(
+            { title: { $exists: false } },
+            { $set: { title: '' } }
+          ),
+          Post.updateMany(
+            { description: { $exists: false } },
+            { $set: { description: '' } }
+          ),
+          Post.updateMany(
+            { tags: { $exists: false } },
+            { $set: { tags: [] } }
+          ),
+        ]);
+        if (
+          titleResult.modifiedCount ||
+          descResult.modifiedCount ||
+          tagsResult.modifiedCount
+        ) {
+          console.log(
+            `Post backfill complete: title=${titleResult.modifiedCount}, description=${descResult.modifiedCount}, tags=${tagsResult.modifiedCount}`
+          );
+        }
+      } catch (err) {
+        console.error('Post backfill failed:', err);
+      }
+    })
     .catch((err) => console.error('MongoDB connection error:', err));
 }
 
@@ -75,7 +104,7 @@ app.get('/api/posts', async (req, res) => {
 
 app.post('/api/posts', async (req, res) => {
   try {
-    const { user, likes, comments, url, date } = req.body;
+    const { user, likes, comments, url, date, title, description, tags, medium } = req.body;
     if (!user || !url) {
       return res.status(400).json({ error: 'user and url are required' });
     }
@@ -85,6 +114,12 @@ app.post('/api/posts', async (req, res) => {
       likes: likes ?? 0,
       comments: comments ?? [],
       url,
+      title: typeof title === 'string' ? title.trim() : '',
+      description: typeof description === 'string' ? description.trim() : '',
+      tags: Array.isArray(tags)
+        ? tags.map((t) => String(t).trim()).filter(Boolean)
+        : [],
+      medium: typeof medium === 'string' ? medium.trim() : undefined,
       date: date ? new Date(date) : undefined,
     });
 

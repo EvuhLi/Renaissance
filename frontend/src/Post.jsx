@@ -1,5 +1,88 @@
-import React from "react";
+import React, { useEffect, useRef } from "react";
 import { GiShirtButton } from "react-icons/gi";
+
+const drawImageToCanvas = (canvas, img, fit = "cover") => {
+  if (!canvas || !img) return;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+
+  const dpr = window.devicePixelRatio || 1;
+  const { clientWidth, clientHeight } = canvas;
+  if (!clientWidth || !clientHeight) return;
+
+  canvas.width = Math.floor(clientWidth * dpr);
+  canvas.height = Math.floor(clientHeight * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, clientWidth, clientHeight);
+
+  const imgRatio = img.width / img.height;
+  const canvasRatio = clientWidth / clientHeight;
+  let drawWidth;
+  let drawHeight;
+  let dx;
+  let dy;
+
+  if (fit === "contain") {
+    if (imgRatio > canvasRatio) {
+      drawWidth = clientWidth;
+      drawHeight = clientWidth / imgRatio;
+      dx = 0;
+      dy = (clientHeight - drawHeight) / 2;
+    } else {
+      drawHeight = clientHeight;
+      drawWidth = clientHeight * imgRatio;
+      dx = (clientWidth - drawWidth) / 2;
+      dy = 0;
+    }
+  } else {
+    if (imgRatio > canvasRatio) {
+      drawHeight = clientHeight;
+      drawWidth = clientHeight * imgRatio;
+      dx = (clientWidth - drawWidth) / 2;
+      dy = 0;
+    } else {
+      drawWidth = clientWidth;
+      drawHeight = clientWidth / imgRatio;
+      dx = 0;
+      dy = (clientHeight - drawHeight) / 2;
+    }
+  }
+
+  ctx.drawImage(img, dx, dy, drawWidth, drawHeight);
+};
+
+const CanvasImage = ({ src, fit = "cover", style, canvasStyle }) => {
+  const canvasRef = useRef(null);
+  const imgRef = useRef(null);
+
+  useEffect(() => {
+    const img = new Image();
+    imgRef.current = img;
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      drawImageToCanvas(canvasRef.current, img, fit);
+    };
+    img.src = src;
+
+    const handleResize = () => {
+      if (imgRef.current) {
+        drawImageToCanvas(canvasRef.current, imgRef.current, fit);
+      }
+    };
+
+    window.addEventListener("resize", handleResize);
+    return () => {
+      window.removeEventListener("resize", handleResize);
+    };
+  }, [src, fit]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      style={{ display: "block", width: "100%", height: "100%", ...canvasStyle }}
+    />
+  );
+};
 
 const Post = ({
   posts,
@@ -17,23 +100,30 @@ const Post = ({
           <div
             key={post._id || post.id}
             style={styles.gridItem}
+            className="post-grid-item"
             onClick={() => setSelectedPost(post)}
           >
-            <img
-              src={post.url}
-              alt="artwork"
-              style={{
-                ...styles.artwork,
-                filter: isProtected ? "blur(30px)" : "none",
-              }}
-            />
+            <div style={styles.artworkWrapper}>
+              <CanvasImage
+                src={post.url}
+                fit="cover"
+                canvasStyle={{
+                  filter: isProtected ? "blur(30px)" : "none",
+                }}
+              />
+            </div>
+              {(post.title || post.description) && (
+                <div style={styles.gridTitle} className="post-grid-title">
+                  {post.title || post.description}
+                </div>
+              )}
 
             <div
               onContextMenu={(e) => {
                 e.preventDefault();
                 alert("Image export restricted.");
               }}
-              className="gridOverlay"
+              className="post-grid-overlay"
               style={styles.gridOverlay}
             />
           </div>
@@ -44,14 +134,16 @@ const Post = ({
         <div style={styles.modalOverlay} onClick={() => setSelectedPost(null)}>
           <div style={styles.modalContent} onClick={(e) => e.stopPropagation()}>
             <div style={styles.modalImageSide}>
-              <img
-                src={selectedPost.url}
-                alt="art"
-                style={{
-                  ...styles.modalImg,
-                  filter: isProtected ? "blur(30px)" : "none",
-                }}
-              />
+              <div style={styles.modalCanvasWrap}>
+                <CanvasImage
+                  src={selectedPost.url}
+                  fit="contain"
+                  canvasStyle={{
+                    ...styles.modalImg,
+                    filter: isProtected ? "blur(30px)" : "none",
+                  }}
+                />
+              </div>
               <div
                 onContextMenu={(e) => e.preventDefault()}
                 style={styles.ghostLayer}
@@ -70,8 +162,13 @@ const Post = ({
                   })()}
                 </strong>
               </div>
-              {(selectedPost.description || (selectedPost.tags || []).length > 0) && (
+              {(selectedPost.title || selectedPost.description || (selectedPost.tags || []).length > 0) && (
                 <div style={styles.modalMeta}>
+                  {selectedPost.title && (
+                    <div style={styles.title}>
+                      {selectedPost.title}
+                    </div>
+                  )}
                   {selectedPost.description && (
                     <div style={styles.description}>
                       {selectedPost.description}
@@ -181,6 +278,10 @@ const styles = {
     overflow: "hidden",
     backgroundColor: "#000",
   },
+  artworkWrapper: {
+    width: "100%",
+    height: "100%",
+  },
   artwork: {
     width: "100%",
     height: "100%",
@@ -193,9 +294,25 @@ const styles = {
     left: 0,
     width: "100%",
     height: "100%",
-    zIndex: 10,
+    zIndex: 8,
     backgroundImage:
       'url("data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7")',
+  },
+  gridTitle: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    padding: "8px 10px",
+    fontSize: "13px",
+    color: "#fff",
+    background:
+      "linear-gradient(180deg, rgba(0,0,0,0) 0%, rgba(0,0,0,0.7) 100%)",
+    zIndex: 12,
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    pointerEvents: "none",
   },
 
   modalOverlay: {
@@ -227,6 +344,13 @@ const styles = {
     alignItems: "center",
     justifyContent: "center",
   },
+  modalCanvasWrap: {
+    width: "100%",
+    height: "100%",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+  },
   modalImg: { maxWidth: "100%", maxHeight: "100%", objectFit: "contain" },
   ghostLayer: {
     position: "absolute",
@@ -245,6 +369,7 @@ const styles = {
     flexDirection: "column",
     gap: "8px",
   },
+  title: { fontSize: "16px", fontWeight: "600", color: "#262626" },
   description: { fontSize: "14px", color: "#262626" },
   tags: { display: "flex", flexWrap: "wrap", gap: "8px" },
   tag: { fontSize: "13px", color: "#00376b" },

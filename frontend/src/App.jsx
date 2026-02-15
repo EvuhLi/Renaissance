@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, Link } from 'react-router-dom';
-import ProfilePage from './profilepage';
+import './App.css';
+import ProfilePage from './ProfilePage';
 
 function App() {
   return (
