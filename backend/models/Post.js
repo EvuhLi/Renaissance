@@ -10,7 +10,7 @@ const CommentSchema = new mongoose.Schema(
 
 const PostSchema = new mongoose.Schema({
   user: { type: String, required: true },
-  likedPosts: { type: Number, default: 0 },
+  likes: { type: Number, default: 0 },
   comments: { type: [CommentSchema], default: [] },
   url: { type: String, required: true },
   date: { type: Date, default: Date.now },

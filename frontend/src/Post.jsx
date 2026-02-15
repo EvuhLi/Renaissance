@@ -15,7 +15,7 @@ const Post = ({
       <div style={styles.grid}>
         {posts.map((post) => (
           <div
-            key={post.id}
+            key={post._id || post.id}
             style={styles.gridItem}
             onClick={() => setSelectedPost(post)}
           >
@@ -72,17 +72,23 @@ const Post = ({
                     gap: "15px",
                   }}
                 >
-                  <GiShirtButton
-                    onClick={() => toggleButton(selectedPost.id)}
-                    style={{
-                      cursor: "pointer",
-                      color: likedPosts[selectedPost.id] ? "black" : "white",
-                      filter: likedPosts[selectedPost.id]
-                        ? "none"
-                        : "drop-shadow(0px 0px 1px rgba(0,0,0,0.5))",
-                      transition: "color 0.2s ease",
-                    }}
-                  />
+                  {(() => {
+                    const postId = selectedPost._id || selectedPost.id;
+                    const isLiked = !!likedPosts[postId];
+                    return (
+                      <GiShirtButton
+                        onClick={() => toggleButton(postId)}
+                        style={{
+                          cursor: "pointer",
+                          color: isLiked ? "black" : "white",
+                          filter: isLiked
+                            ? "none"
+                            : "drop-shadow(0px 0px 1px rgba(0,0,0,0.5))",
+                          transition: "color 0.2s ease",
+                        }}
+                      />
+                    );
+                  })()}
                 </div>
 
                 <div
@@ -92,17 +98,21 @@ const Post = ({
                     gap: "2px",
                   }}
                 >
-                  <strong>
-                    {selectedPost.likes + (likedPosts[selectedPost.id] ? 1 : 0)}{" "}
-                    buttons
-                  </strong>
+                  {(() => {
+                    const baseLikes = selectedPost.likes ?? 0;
+                    return (
+                      <strong>
+                        {baseLikes} buttons
+                      </strong>
+                    );
+                  })()}
                   <strong style={{ color: "#8e8e8e", fontSize: "14px" }}>
-                    {selectedPost.comments.length} threads
+                    {(selectedPost.comments || []).length} threads
                   </strong>
                 </div>
               </div>
               <div style={styles.commentList}>
-                {selectedPost.comments.map((c) => (
+                {(selectedPost.comments || []).map((c) => (
                   <div key={c.id} style={styles.commentItem}>
                     <strong>{c.user}</strong> {c.text}
                   </div>

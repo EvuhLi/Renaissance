@@ -74,14 +74,14 @@ app.get('/api/posts', async (req, res) => {
 
 app.post('/api/posts', async (req, res) => {
   try {
-    const { user, likedPosts, comments, url, date } = req.body;
+    const { user, likes, comments, url, date } = req.body;
     if (!user || !url) {
       return res.status(400).json({ error: 'user and url are required' });
     }
 
     const newPost = await Post.create({
       user,
-      likedPosts: likedPosts ?? 0,
+      likes: likes ?? 0,
       comments: comments ?? [],
       url,
       date: date ? new Date(date) : undefined,
@@ -90,6 +90,28 @@ app.post('/api/posts', async (req, res) => {
     res.status(201).json(newPost);
   } catch (error) {
     console.error('Create Post Error:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+app.patch('/api/posts/:id/like', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const delta = Number(req.body?.delta ?? 1);
+
+    const updatedPost = await Post.findByIdAndUpdate(
+      id,
+      { $inc: { likes: delta } },
+      { new: true }
+    );
+
+    if (!updatedPost) {
+      return res.status(404).json({ error: 'Post not found' });
+    }
+
+    res.json(updatedPost);
+  } catch (error) {
+    console.error('Like Post Error:', error);
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });

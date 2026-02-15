@@ -52,11 +52,67 @@ const ProfilePage = () => {
   const [selectedPost, setSelectedPost] = useState(null);
   const [likedPosts, setLikedPosts] = useState({}); // Stores { postId: true/false }
 
-  const toggleButton = (postId) => {
+  const toggleButton = async (postId) => {
+    const wasLiked = !!likedPosts[postId];
+    const delta = wasLiked ? -1 : 1;
+
     setLikedPosts((prev) => ({
       ...prev,
       [postId]: !prev[postId],
     }));
+
+    setPosts((prev) =>
+      prev.map((post) =>
+        (post._id || post.id) === postId
+          ? { ...post, likes: (post.likes ?? 0) + delta }
+          : post
+      )
+    );
+
+    setSelectedPost((prev) =>
+      prev && (prev._id || prev.id) === postId
+        ? { ...prev, likes: (prev.likes ?? 0) + delta }
+        : prev
+    );
+
+    try {
+      const response = await fetch(`${BACKEND_URL}/api/posts/${postId}/like`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ delta }),
+      });
+
+      if (!response.ok) throw new Error("Failed to update like");
+      const updatedPost = await response.json();
+
+      setPosts((prev) =>
+        prev.map((post) =>
+          (post._id || post.id) === postId ? updatedPost : post
+        )
+      );
+      setSelectedPost((prev) =>
+        prev && (prev._id || prev.id) === postId ? updatedPost : prev
+      );
+    } catch (error) {
+      console.error("Update Like Error:", error);
+      const rollback = -delta;
+      setLikedPosts((prev) => ({
+        ...prev,
+        [postId]: wasLiked,
+      }));
+      setPosts((prev) =>
+        prev.map((post) =>
+          (post._id || post.id) === postId
+            ? { ...post, likes: (post.likes ?? 0) + rollback }
+            : post
+        )
+      );
+      setSelectedPost((prev) =>
+        prev && (prev._id || prev.id) === postId
+          ? { ...prev, likes: (prev.likes ?? 0) + rollback }
+          : prev
+      );
+    }
   };
   //   const [newComment, setNewComment] = useState("");
 
@@ -139,7 +195,7 @@ const ProfilePage = () => {
       const cloakedUrl = canvas.toDataURL("image/jpeg", 0.9);
       const payload = {
         user: user.username,
-        likedPosts: 0,
+        likes: 0,
         comments: [],
         url: cloakedUrl,
         date: new Date().toISOString(),
