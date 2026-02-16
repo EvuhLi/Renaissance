@@ -6,6 +6,7 @@ import FYP from "./FYP";
 import LandingPage from "./LandingPage";
 import LoginPage from "./LoginPage";
 import ProfilePage from "./ProfilePage";
+import AboutPage from "./AboutPage";
 
 const GRADIENT = "linear-gradient(90deg, #3dd5f3, #b14dff)";
 const NAV_HEIGHT = 56; // keep content from hiding under fixed nav
@@ -84,6 +85,7 @@ function App() {
               role="menu"
             >
               <MenuItem to="/" label="Home" onPick={() => setOpen(false)} />
+              <MenuItem to="/about" label="About" onPick={() => setOpen(false)} />
               <MenuItem to="/login" label="Login" onPick={() => setOpen(false)} />
               <MenuItem to="/profile" label="Profile" onPick={() => setOpen(false)} />
               <MenuItem to="/fyp" label="For You" onPick={() => setOpen(false)} />
@@ -94,6 +96,7 @@ function App() {
 
       <Routes>
         <Route path="/" element={<LandingPage />} />
+        <Route path="/about" element={<AboutPage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/profile" element={<ProfilePage />} />
         <Route path="/profile/:artistId" element={<ProfilePage />} />
