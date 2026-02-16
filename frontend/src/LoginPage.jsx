@@ -4,57 +4,52 @@ import ReCAPTCHA from "react-google-recaptcha";
 import "./App.css";
 
 export default function LoginPage() {
-  // 1. State to store what the user types
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [captchaToken, setCaptchaToken] = useState(null);
+
+  const siteKey = import.meta.env.VITE_RECAPTCHA_SITE_KEY;
 
   const onCaptchaChange = (token) => {
     setCaptchaToken(token);
   };
 
-  // 2. The function that runs when you click LOGIN
   const handleLogin = async (e) => {
-    // If inside a form, prevent page refresh. If just a button, this is safe to keep.
-    if (e) e.preventDefault(); 
+    if (e) e.preventDefault();
 
-    // A. Check if Captcha is done
+    // 0) Make sure we have a site key
+    if (!siteKey) {
+      alert("Missing reCAPTCHA site key. Add VITE_RECAPTCHA_SITE_KEY to frontend/.env and restart.");
+      return;
+    }
+
+    // A) Check captcha
     if (!captchaToken) {
       alert("Please check the box to verify you are not a robot!");
       return;
     }
 
-    // B. Check if fields are filled
+    // B) Check fields
     if (!username || !password) {
       alert("Please enter both username and password.");
       return;
     }
 
-    console.log("Sending data to backend:", { username, password, captchaToken });
-
-    // C. Send data to your backend (The "Login Logic")
     try {
-      // Replace '/api/login' with your actual backend URL (e.g., 'http://localhost:5000/login')
-      const response = await fetch('http://localhost:5000/login', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          username: username,
-          password: password,
-          captchaToken: captchaToken, // Sending the token to be verified
-        }),
+      const response = await fetch("http://localhost:5000/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password, captchaToken }),
       });
 
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
 
       if (response.ok) {
         alert("Login Successful!");
-        // Redirect user to home page here
-        // window.location.href = "/"; 
+        // Optional redirect:
+        // window.location.href = "/";
       } else {
-        alert("Login Failed: " + data.message);
+        alert("Login Failed: " + (data.message || "Unknown error"));
       }
     } catch (error) {
       console.error("Error:", error);
@@ -86,20 +81,20 @@ export default function LoginPage() {
       >
         <h2 style={{ textAlign: "center", margin: "0 0 20px" }}>Login</h2>
 
-        {/* USERNAME INPUT */}
+        {/* USERNAME */}
         <label style={{ display: "block", fontSize: 12, color: "#666", marginBottom: 6 }}>
           Username
         </label>
         <input
           placeholder="Type your username"
           style={inputStyle}
-          value={username} // Controlled input
-          onChange={(e) => setUsername(e.target.value)} // Updates state
+          value={username}
+          onChange={(e) => setUsername(e.target.value)}
         />
 
         <div style={{ height: 14 }} />
 
-        {/* PASSWORD INPUT */}
+        {/* PASSWORD */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
           <label style={{ fontSize: 12, color: "#666" }}>Password</label>
           <a href="#" onClick={(e) => e.preventDefault()} style={{ fontSize: 12, color: "#7c3aed" }}>
@@ -110,16 +105,30 @@ export default function LoginPage() {
           type="password"
           placeholder="Type your password"
           style={inputStyle}
-          value={password} // Controlled input
-          onChange={(e) => setPassword(e.target.value)} // Updates state
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
         />
 
         {/* CAPTCHA */}
-        <div style={{ marginTop: 20, display: 'flex', justifyContent: 'center' }}>
-          <ReCAPTCHA
-            sitekey={import.meta.env.VITE_RECAPTCHA_SITE_KEY}
-            onChange={onCaptchaChange}
-          />
+        <div style={{ marginTop: 20, display: "flex", justifyContent: "center" }}>
+          {siteKey ? (
+            <ReCAPTCHA sitekey={siteKey} onChange={onCaptchaChange} />
+          ) : (
+            <div
+              style={{
+                fontSize: 12,
+                color: "#b91c1c",
+                background: "rgba(185, 28, 28, 0.08)",
+                border: "1px solid rgba(185, 28, 28, 0.25)",
+                padding: "10px 12px",
+                borderRadius: 10,
+                textAlign: "center",
+              }}
+            >
+              Missing <b>VITE_RECAPTCHA_SITE_KEY</b>. Create <code>frontend/.env</code> and restart
+              <code> npm run dev</code>.
+            </div>
+          )}
         </div>
 
         {/* LOGIN BUTTON */}
