@@ -1,24 +1,26 @@
-
-require('dotenv').config(); // Loads your HF_API_TOKEN from .env
-const secretKey = process.env.RECAPTCHA_SECRET_KEY; 
+require('dotenv').config();
+const secretKey = process.env.RECAPTCHA_SECRET_KEY;
 const express = require('express');
 const cors = require('cors');
-const fetch = require('node-fetch'); // Ensure you have node-fetch installed
+const nodeFetch = require('node-fetch');
+const FormData = require('form-data');
 const mongoose = require('mongoose');
 const Post = require('./models/Post');
 const Account = require('./models/Account');
-const router = express.Router(); 
+const router = express.Router();
 
 const app = express();
 
-// Enable CORS so your frontend (on port 5173/3000) can talk to this server (on 3001)
 app.use(cors());
-
-// Increase the limit because images sent as strings (Base64) are large
-app.use(express.json({ limit: '25mb' }));
-app.use(express.urlencoded({ limit: '25mb', extended: true }));
+app.use((req, res, next) => {
+  if (req.path === '/api/analyze') console.log('[middleware] analyze request incoming, content-length:', req.headers['content-length']);
+  next();
+});
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 const MONGODB_URI = process.env.MONGODB_URI;
+const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://127.0.0.1:8001';
 
 if (!MONGODB_URI) {
   console.error('Missing MONGODB_URI in environment. Add it to backend .env');
@@ -29,24 +31,11 @@ if (!MONGODB_URI) {
       console.log('MongoDB connected');
       try {
         const [titleResult, descResult, tagsResult] = await Promise.all([
-          Post.updateMany(
-            { title: { $exists: false } },
-            { $set: { title: '' } }
-          ),
-          Post.updateMany(
-            { description: { $exists: false } },
-            { $set: { description: '' } }
-          ),
-          Post.updateMany(
-            { tags: { $exists: false } },
-            { $set: { tags: [] } }
-          ),
+          Post.updateMany({ title: { $exists: false } }, { $set: { title: '' } }),
+          Post.updateMany({ description: { $exists: false } }, { $set: { description: '' } }),
+          Post.updateMany({ tags: { $exists: false } }, { $set: { tags: [] } }),
         ]);
-        if (
-          titleResult.modifiedCount ||
-          descResult.modifiedCount ||
-          tagsResult.modifiedCount
-        ) {
+        if (titleResult.modifiedCount || descResult.modifiedCount || tagsResult.modifiedCount) {
           console.log(
             `Post backfill complete: title=${titleResult.modifiedCount}, description=${descResult.modifiedCount}, tags=${tagsResult.modifiedCount}`
           );
@@ -62,10 +51,7 @@ if (!MONGODB_URI) {
               { new: true, upsert: true, setDefaultsOnInsert: true }
             );
             if (account?._id) {
-              await Post.updateOne(
-                { _id: post._id },
-                { $set: { artistId: account._id } }
-              );
+              await Post.updateOne({ _id: post._id }, { $set: { artistId: account._id } });
             }
           }
           console.log(`Post artistId backfill complete: ${postsMissingArtist.length}`);
@@ -79,21 +65,18 @@ if (!MONGODB_URI) {
 
 const MODEL_URL = "https://router.huggingface.co/hf-inference/models/umm-maybe/AI-image-detector";
 
+// ==========================================
+// AI DETECTION
+// ==========================================
 app.post('/api/check-ai', async (req, res) => {
   try {
     const { imageData } = req.body;
+    if (!imageData) return res.status(400).json({ error: "No image data provided" });
 
-    if (!imageData) {
-      return res.status(400).json({ error: "No image data provided" });
-    }
-
-    // 1. Convert Base64 string back into binary Buffer for the AI model
     const imageBuffer = Buffer.from(imageData, 'base64');
-
     console.log("Sending image to Hugging Face for scanning...");
 
-    // 2. Make the request using the SECRET KEY stored in process.env
-    const hfResponse = await fetch(MODEL_URL, {
+    const hfResponse = await nodeFetch(MODEL_URL, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${process.env.HF_API_TOKEN}`,
@@ -103,18 +86,64 @@ app.post('/api/check-ai', async (req, res) => {
     });
 
     const result = await hfResponse.json();
-    
-    // 3. Send the AI's answer back to your frontend
     console.log("Scan complete. Sending results back to frontend.");
     res.json(result);
-
   } catch (error) {
-    console.error("Backend Error:", error);
+    console.error("check-ai error:", error.message);
     res.status(500).json({ error: "Internal Server Error" });
   }
 });
 
-// Posts
+// ==========================================
+// ML TAGGING PROXY
+// ==========================================
+app.post('/api/analyze', async (req, res) => {
+  console.log('[analyze] route hit');
+  try {
+    const { imageData } = req.body;
+    console.log('[analyze] imageData present:', !!imageData, '| length:', imageData?.length);
+
+    if (!imageData) {
+      return res.status(400).json({ error: 'No image data provided' });
+    }
+
+    const imageBuffer = Buffer.from(imageData, 'base64');
+    console.log('[analyze] buffer size:', imageBuffer.length);
+
+    const form = new FormData();
+    form.append('image', imageBuffer, {
+      filename: 'artwork.jpg',
+      contentType: 'image/jpeg',
+    });
+    console.log('[analyze] form built, forwarding to:', `${ML_SERVICE_URL}/analyze`);
+
+    const mlResponse = await nodeFetch(`${ML_SERVICE_URL}/analyze`, {
+      method: 'POST',
+      body: form,
+      headers: form.getHeaders(),
+    });
+
+    console.log('[analyze] ML response status:', mlResponse.status);
+
+    if (!mlResponse.ok) {
+      const errorText = await mlResponse.text();
+      console.error(`[analyze] ML service error ${mlResponse.status}:`, errorText);
+      return res.status(502).json({ error: 'ML service error', detail: errorText });
+    }
+
+    const mlTags = await mlResponse.json();
+    console.log('[analyze] success — tag categories:', Object.keys(mlTags));
+    res.json(mlTags);
+  } catch (error) {
+    console.error('[analyze] CRASH:', error.message);
+    console.error('[analyze] stack:', error.stack);
+    res.status(500).json({ error: 'Internal Server Error', detail: error.message });
+  }
+});
+
+// ==========================================
+// POSTS
+// ==========================================
 app.get('/api/posts', async (req, res) => {
   try {
     const posts = await Post.find().sort({ date: -1 });
@@ -127,7 +156,8 @@ app.get('/api/posts', async (req, res) => {
 
 app.post('/api/posts', async (req, res) => {
   try {
-    const { user, artistId, likes, comments, url, date, title, description, tags, medium } = req.body;
+    const { user, artistId, likes, comments, url, date, title, description, tags, mlTags, medium } = req.body;
+
     if (!user || !url) {
       return res.status(400).json({ error: 'user and url are required' });
     }
@@ -157,6 +187,7 @@ app.post('/api/posts', async (req, res) => {
       tags: Array.isArray(tags)
         ? tags.map((t) => String(t).trim()).filter(Boolean)
         : [],
+      mlTags: mlTags && typeof mlTags === 'object' ? mlTags : {},
       medium: typeof medium === 'string' ? medium.trim() : undefined,
       date: date ? new Date(date) : undefined,
     });
@@ -168,30 +199,19 @@ app.post('/api/posts', async (req, res) => {
   }
 });
 
-// Accounts
+// ==========================================
+// ACCOUNTS
+// ==========================================
 app.get('/api/accounts/id/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    if (!id) {
-      return res.status(400).json({ error: 'id is required' });
-    }
+    if (!id) return res.status(400).json({ error: 'id is required' });
 
     let account = null;
-    if (mongoose.Types.ObjectId.isValid(id)) {
-      account = await Account.findById(id);
-    }
-
-    if (!account) {
-      account = await Account.findOne({ _id: id });
-    }
-
-    if (!account) {
-      account = await Account.findOne({ username: id });
-    }
-
-    if (!account) {
-      return res.status(404).json({ error: 'Account not found' });
-    }
+    if (mongoose.Types.ObjectId.isValid(id)) account = await Account.findById(id);
+    if (!account) account = await Account.findOne({ _id: id });
+    if (!account) account = await Account.findOne({ username: id });
+    if (!account) return res.status(404).json({ error: 'Account not found' });
 
     res.json(account);
   } catch (error) {
@@ -203,14 +223,10 @@ app.get('/api/accounts/id/:id', async (req, res) => {
 app.get('/api/accounts/:username', async (req, res) => {
   try {
     const { username } = req.params;
-    if (!username) {
-      return res.status(400).json({ error: 'username is required' });
-    }
+    if (!username) return res.status(400).json({ error: 'username is required' });
 
     let account = await Account.findOne({ username });
-    if (!account) {
-      account = await Account.create({ username });
-    }
+    if (!account) account = await Account.create({ username });
 
     res.json(account);
   } catch (error) {
@@ -222,21 +238,15 @@ app.get('/api/accounts/:username', async (req, res) => {
 app.post('/api/accounts', async (req, res) => {
   try {
     const { username, bio, followersCount, following } = req.body;
-    if (!username) {
-      return res.status(400).json({ error: 'username is required' });
-    }
+    if (!username) return res.status(400).json({ error: 'username is required' });
 
     const existing = await Account.findOne({ username });
-    if (existing) {
-      return res.status(409).json({ error: 'username already exists' });
-    }
+    if (existing) return res.status(409).json({ error: 'username already exists' });
 
     const account = await Account.create({
       username,
       bio: typeof bio === 'string' ? bio : undefined,
-      followersCount: Number.isFinite(followersCount)
-        ? followersCount
-        : undefined,
+      followersCount: Number.isFinite(followersCount) ? followersCount : undefined,
       following: Array.isArray(following) ? following : undefined,
     });
 
@@ -258,10 +268,7 @@ app.patch('/api/posts/:id/like', async (req, res) => {
       { new: true }
     );
 
-    if (!updatedPost) {
-      return res.status(404).json({ error: 'Post not found' });
-    }
-
+    if (!updatedPost) return res.status(404).json({ error: 'Post not found' });
     res.json(updatedPost);
   } catch (error) {
     console.error('Like Post Error:', error);
@@ -272,7 +279,9 @@ app.patch('/api/posts/:id/like', async (req, res) => {
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => console.log(`Backend secure bridge running on port ${PORT}`));
 
-
+// ==========================================
+// SIGNUP / CAPTCHA
+// ==========================================
 router.post('/signup', async (req, res) => {
   const { username, password, captchaToken } = req.body;
 
@@ -280,20 +289,16 @@ router.post('/signup', async (req, res) => {
     return res.status(400).json({ message: "Captcha token is missing" });
   }
 
-  // Verify the token with Google
-  const googleVerifyUrl = `https://www.google.com/recaptcha/api/siteverify?secret=${RECAPTCHA_SECRET_KEY}&response=${captchaToken}`;
+  const googleVerifyUrl = `https://www.google.com/recaptcha/api/siteverify?secret=${secretKey}&response=${captchaToken}`;
 
   try {
-    const response = await fetch(googleVerifyUrl, { method: 'POST' });
+    const response = await nodeFetch(googleVerifyUrl, { method: 'POST' });
     const data = await response.json();
 
     if (data.success) {
-      // CAPTCHA is valid! 
-      // Proceed to create the user in your database here.
       console.log("User is human");
       res.status(200).json({ message: "Signup successful" });
     } else {
-      // CAPTCHA failed
       res.status(400).json({ message: "Captcha verification failed. You might be a bot." });
     }
   } catch (error) {
