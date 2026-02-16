@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route, Link } from "react-router-dom";
 import { useState } from "react";
 import "./App.css";
 
+import FYP from "./FYP";
 import LandingPage from "./LandingPage";
 import LoginPage from "./LoginPage";
 import ProfilePage from "./ProfilePage";
@@ -85,6 +86,7 @@ function App() {
               <MenuItem to="/" label="Home" onPick={() => setOpen(false)} />
               <MenuItem to="/login" label="Login" onPick={() => setOpen(false)} />
               <MenuItem to="/profile" label="Profile" onPick={() => setOpen(false)} />
+              <MenuItem to="/fyp" label="For You" onPick={() => setOpen(false)} />
             </div>
           )}
         </div>
@@ -95,6 +97,7 @@ function App() {
         <Route path="/login" element={<LoginPage />} />
         <Route path="/profile" element={<ProfilePage />} />
         <Route path="/profile/:artistId" element={<ProfilePage />} />
+        <Route path="/fyp" element={<FYP />} />
       </Routes>
     </BrowserRouter>
   );

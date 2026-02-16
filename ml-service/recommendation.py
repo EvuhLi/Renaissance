@@ -1,12 +1,70 @@
+"""
+Loom Recommendation Engine — Hybrid NCF + Tag Affinity
+=======================================================
+FastAPI service exposing:
+  POST /recommend    — generate a personalised FYP feed
+  POST /interaction  — record a like/comment and update NCF weights
+  GET  /health       — liveness check
+
+User identity: username string (no auth required yet).
+Persistence:   NCF model weights saved to MongoDB as base64 numpy arrays.
+"""
+
+import numpy as np
 import random
 import math
+import base64
+import io
+import os
+import logging
 from collections import defaultdict
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from fastapi import FastAPI
+from pydantic import BaseModel
+from pymongo import MongoClient
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("recommendation")
+
+app = FastAPI(title="Loom Recommendation Service")
+
+# ==========================================
+# MONGODB CONNECTION
+# ==========================================
+MONGO_URI = os.getenv("MONGODB_URI", "")
+_db = None
+
+def get_db():
+    global _db
+    if _db is None and MONGO_URI:
+        try:
+            client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=3000)
+            _db = client.get_default_database()
+            logger.info("[NCF] MongoDB connected for model persistence")
+        except Exception as e:
+            logger.warning(f"[NCF] MongoDB unavailable — running without persistence: {e}")
+    return _db
 
 
-# -------- CATEGORY WEIGHTS -------- #
-# All 6 taxonomy categories are weighted.
-# Subject and style drive discovery the most on a creative platform.
-# Mood and color_palette are softer signals but matter for vibe-matching.
+# ==========================================
+# CONSTANTS
+# ==========================================
+EMBEDDING_DIM       = 32
+LEARNING_RATE       = 0.01
+REGULARIZATION      = 0.001
+MIN_INTERACTIONS    = 5
+MAX_NCF_WEIGHT      = 0.65
+SERENDIPITY_RATIO   = 0.10
+TAG_DECAY_FACTOR    = 0.5
+DIVERSITY_THRESHOLD = 0.45
+
+INTERACTION_WEIGHTS = {
+    "like":    1.0,
+    "comment": 0.8,
+}
+
 CATEGORY_WEIGHTS = {
     "medium":             0.15,
     "subject":            0.25,
@@ -16,303 +74,359 @@ CATEGORY_WEIGHTS = {
     "aesthetic_features": 0.10,
 }
 
-# How many posts in the final FYP are "serendipity" picks —
-# intentionally dissimilar to the user's taste to drive discovery.
-SERENDIPITY_RATIO = 0.10
 
-# Tag repetition decay — if the user has already seen a tag N times
-# in this feed generation, confidence contribution is multiplied by this.
-TAG_DECAY_FACTOR = 0.5
+# ==========================================
+# NCF MODEL
+# ==========================================
+class LoomNCF:
+    def __init__(self, embedding_dim=EMBEDDING_DIM, lr=LEARNING_RATE, reg=REGULARIZATION):
+        self.embedding_dim = embedding_dim
+        self.lr = lr
+        self.reg = reg
+        self.user_embeddings: Dict[str, np.ndarray] = {}
+        self.post_embeddings: Dict[str, np.ndarray] = {}
+        self.W1 = np.random.randn(embedding_dim * 2, embedding_dim) * 0.01
+        self.b1 = np.zeros(embedding_dim)
+        self.W2 = np.random.randn(embedding_dim, 1) * 0.01
+        self.b2 = np.zeros(1)
+        self.user_interaction_counts: Dict[str, int] = defaultdict(int)
+
+    def _get_user_emb(self, uid: str) -> np.ndarray:
+        if uid not in self.user_embeddings:
+            self.user_embeddings[uid] = np.random.randn(self.embedding_dim) * 0.01
+        return self.user_embeddings[uid]
+
+    def _get_post_emb(self, pid: str) -> np.ndarray:
+        if pid not in self.post_embeddings:
+            self.post_embeddings[pid] = np.random.randn(self.embedding_dim) * 0.01
+        return self.post_embeddings[pid]
+
+    def _forward(self, user_emb, post_emb):
+        x  = np.concatenate([user_emb, post_emb])
+        h1 = np.tanh(x @ self.W1 + self.b1)
+        out = h1 @ self.W2 + self.b2
+        score = 1 / (1 + np.exp(-out[0]))
+        return score, h1, x
+
+    def predict(self, user_id: str, post_id: str) -> float:
+        score, _, _ = self._forward(self._get_user_emb(user_id), self._get_post_emb(post_id))
+        return float(score)
+
+    def update(self, user_id: str, post_id: str, interaction_type: str,
+               negative_post_ids: Optional[List[str]] = None):
+        label    = INTERACTION_WEIGHTS.get(interaction_type, 1.0)
+        user_emb = self._get_user_emb(user_id)
+        post_emb = self._get_post_emb(post_id)
+
+        pos_score, h1, x = self._forward(user_emb, post_emb)
+        err  = label - pos_score
+        d_out = err * pos_score * (1 - pos_score)
+
+        d_W2   = np.outer(h1, [d_out])
+        d_b2   = np.array([d_out])
+        d_h1   = (self.W2 * d_out).flatten()
+        d_tanh = (1 - h1 ** 2) * d_h1
+        d_W1   = np.outer(x, d_tanh)
+        d_b1   = d_tanh
+        d_x    = d_tanh @ self.W1.T
+        d_user = d_x[:self.embedding_dim]
+        d_post = d_x[self.embedding_dim:]
+
+        self.W2     += self.lr * (d_W2   - self.reg * self.W2)
+        self.b2     += self.lr * d_b2
+        self.W1     += self.lr * (d_W1   - self.reg * self.W1)
+        self.b1     += self.lr * d_b1
+        user_emb    += self.lr * (d_user - self.reg * user_emb)
+        post_emb    += self.lr * (d_post - self.reg * post_emb)
+
+        if negative_post_ids:
+            neg_id  = random.choice(negative_post_ids)
+            neg_emb = self._get_post_emb(neg_id)
+            neg_score, _, _ = self._forward(user_emb, neg_emb)
+            bpr_grad = -1 / (1 + np.exp(pos_score - neg_score))
+            post_emb += self.lr * (-bpr_grad * d_post)
+            neg_emb  -= self.lr * (-bpr_grad * d_post)
+
+        self.user_interaction_counts[user_id] = \
+            self.user_interaction_counts.get(user_id, 0) + 1
+
+    def ncf_weight(self, user_id: str) -> float:
+        count = self.user_interaction_counts.get(user_id, 0)
+        if count < MIN_INTERACTIONS:
+            return 0.0
+        alpha = MAX_NCF_WEIGHT * (1 - 1 / (1 + math.log(count - MIN_INTERACTIONS + 1)))
+        return min(alpha, MAX_NCF_WEIGHT)
+
+    # ---- Persistence ----
+    def to_dict(self) -> dict:
+        def enc(arr):
+            buf = io.BytesIO(); np.save(buf, arr)
+            return base64.b64encode(buf.getvalue()).decode()
+        return {
+            "embedding_dim": self.embedding_dim,
+            "lr": self.lr, "reg": self.reg,
+            "W1": enc(self.W1), "b1": enc(self.b1),
+            "W2": enc(self.W2), "b2": enc(self.b2),
+            "user_embeddings": {k: enc(v) for k, v in self.user_embeddings.items()},
+            "post_embeddings": {k: enc(v) for k, v in self.post_embeddings.items()},
+            "user_interaction_counts": dict(self.user_interaction_counts),
+            "saved_at": datetime.utcnow().isoformat(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict):
+        def dec(s):
+            buf = io.BytesIO(base64.b64decode(s)); return np.load(buf, allow_pickle=False)
+        m = cls(data["embedding_dim"], data["lr"], data["reg"])
+        m.W1 = dec(data["W1"]); m.b1 = dec(data["b1"])
+        m.W2 = dec(data["W2"]); m.b2 = dec(data["b2"])
+        m.user_embeddings = {k: dec(v) for k, v in data["user_embeddings"].items()}
+        m.post_embeddings = {k: dec(v) for k, v in data["post_embeddings"].items()}
+        m.user_interaction_counts = defaultdict(
+            int, data.get("user_interaction_counts", {}))
+        return m
 
 
-# -------- USER AFFINITY VECTOR -------- #
+# Global model instance
+_model = LoomNCF()
 
-def build_user_affinity(interaction_history):
-    """
-    Build a tag-level affinity map from a user's interaction history.
 
-    interaction_history: list of dicts, each with:
-        - 'tags': the post's tag dict (same shape as /analyze output)
-        - 'weight': interaction strength
-            e.g. 1.0 = liked, 1.5 = saved, 0.3 = watched >50%, -0.5 = skipped
+# ==========================================
+# PERSISTENCE HELPERS
+# ==========================================
+def save_model():
+    db = get_db()
+    if db is None:
+        return
+    try:
+        db["ncf_model"].update_one(
+            {"_id": "loom_ncf_v1"},
+            {"$set": _model.to_dict()},
+            upsert=True,
+        )
+        logger.info("[NCF] Model saved to MongoDB")
+    except Exception as e:
+        logger.warning(f"[NCF] Save failed: {e}")
 
-    Returns:
-        affinity: { category: { tag_label: score } }
-        A weighted accumulation of tag confidences across all interactions.
-    """
+
+def load_model():
+    global _model
+    db = get_db()
+    if db is None:
+        return
+    try:
+        doc = db["ncf_model"].find_one({"_id": "loom_ncf_v1"})
+        if doc:
+            _model = LoomNCF.from_dict(doc)
+            logger.info(
+                f"[NCF] Loaded from MongoDB — "
+                f"users: {len(_model.user_embeddings)}, "
+                f"posts: {len(_model.post_embeddings)}"
+            )
+        else:
+            logger.info("[NCF] No saved model — starting fresh")
+    except Exception as e:
+        logger.warning(f"[NCF] Load failed: {e}")
+
+
+@app.on_event("startup")
+def startup():
+    load_model()
+
+
+# ==========================================
+# TAG AFFINITY
+# ==========================================
+def build_user_affinity(interaction_history: List[dict]) -> dict:
     affinity = defaultdict(lambda: defaultdict(float))
-
     for interaction in interaction_history:
         weight = interaction.get("weight", 1.0)
         for category, tags in interaction.get("tags", {}).items():
+            if not isinstance(tags, list):
+                continue
             for tag in tags:
-                label = tag["label"]
-                conf = tag["confidence"]
-                affinity[category][label] += conf * weight
-
-    # Normalize each category so dominant interaction types don't skew everything
+                if isinstance(tag, dict) and "label" in tag:
+                    affinity[category][tag["label"]] += tag.get("confidence", 0.5) * weight
     for category, tag_scores in affinity.items():
         total = sum(tag_scores.values())
         if total > 0:
             for label in tag_scores:
                 affinity[category][label] /= total
-
     return affinity
 
 
-# -------- POST SCORING -------- #
-
-def compute_post_score(post_tags, user_affinity, seen_tag_counts, exploration_factor=0.15):
-    """
-    Score a post against a user's affinity vector.
-
-    Scoring logic:
-    1. For each category, compare post tags to user affinity at the tag level.
-       Matching a high-affinity tag scores well; unknown tags get a novelty bonus.
-    2. Apply per-category weight.
-    3. Apply decay for tags the user has already seen in this feed session.
-    4. Add a tunable exploration term for serendipity.
-
-    Args:
-        post_tags:          { category: [{ label, confidence }] }
-        user_affinity:      output of build_user_affinity()
-        seen_tag_counts:    { tag_label: int } — tags already placed in this feed
-        exploration_factor: float, scales random exploration noise
-
-    Returns:
-        float score
-    """
+def compute_tag_score(post_tags: dict, user_affinity: dict,
+                      seen_tag_counts: dict, exploration: float = 0.10) -> float:
     score = 0.0
-
     for category, tags in post_tags.items():
         cat_weight = CATEGORY_WEIGHTS.get(category, 0.0)
-        if cat_weight == 0 or not tags:
+        if not cat_weight or not isinstance(tags, list) or not tags:
             continue
-
         cat_affinity = user_affinity.get(category, {})
         cat_score = 0.0
-
         for tag in tags:
-            label = tag["label"]
-            conf = tag["confidence"]
-
-            # Affinity match: how much does the user like this tag?
-            affinity_score = cat_affinity.get(label, 0.0)
-
-            # Novelty bonus: tags the user has affinity data for are "known";
-            # tags with zero affinity history get a small bonus to drive discovery.
-            if label not in cat_affinity:
-                novelty_bonus = 0.08
-            else:
-                novelty_bonus = 0.0
-
-            # Tag-level contribution: blend confidence with affinity + novelty
-            tag_score = conf * (0.6 + 0.4 * affinity_score) + novelty_bonus
-
-            # Decay if this exact tag has already appeared in the current feed
+            if not isinstance(tag, dict):
+                continue
+            label = tag.get("label", "")
+            conf  = tag.get("confidence", 0.5)
+            aff   = cat_affinity.get(label, 0.0)
+            novelty = 0.08 if label not in cat_affinity else 0.0
+            t_score = conf * (0.6 + 0.4 * aff) + novelty
             times_seen = seen_tag_counts.get(label, 0)
             if times_seen > 0:
-                tag_score *= TAG_DECAY_FACTOR ** times_seen
-
-            cat_score += tag_score
-
-        # Normalize by tag count so posts with 10 weak tags don't beat 2 strong ones
+                t_score *= TAG_DECAY_FACTOR ** times_seen
+            cat_score += t_score
         cat_score /= len(tags)
         score += cat_weight * cat_score
-
-    # Exploration noise — slightly higher than original to prevent feed staleness
-    score += random.uniform(0, exploration_factor)
-
+    score += random.uniform(0, exploration)
     return round(score, 4)
 
 
-# -------- TAG OVERLAP SIMILARITY -------- #
+def compute_hybrid_score(user_id: Optional[str], post: dict,
+                         user_affinity: dict, seen_tag_counts: dict,
+                         exploration: float = 0.10) -> float:
+    post_id   = str(post.get("_id", ""))
+    post_tags = post.get("mlTags") or {}
+    tag_score = compute_tag_score(post_tags, user_affinity, seen_tag_counts, exploration)
 
-def tag_similarity(tags_a, tags_b):
-    """
-    Compute a simple Jaccard-style similarity between two posts' tag sets.
-    Used to enforce tag-level diversity within the feed.
+    if not user_id or not post_id:
+        return tag_score
 
-    Returns float in [0, 1]. Higher = more similar.
-    """
-    labels_a = set(t["label"] for tags in tags_a.values() for t in tags)
-    labels_b = set(t["label"] for tags in tags_b.values() for t in tags)
+    alpha = _model.ncf_weight(user_id)
+    if alpha == 0.0:
+        return tag_score
 
-    if not labels_a or not labels_b:
+    ncf_score = _model.predict(user_id, post_id)
+    return round(alpha * ncf_score + (1 - alpha) * tag_score, 4)
+
+
+# ==========================================
+# DIVERSITY & SERENDIPITY
+# ==========================================
+def tag_similarity(tags_a: Any, tags_b: Any) -> float:
+    def labels(t):
+        if isinstance(t, dict):
+            return set(tag["label"] for v in t.values()
+                       if isinstance(v, list)
+                       for tag in v if isinstance(tag, dict) and "label" in tag)
+        return set()
+    a, b = labels(tags_a), labels(tags_b)
+    if not a or not b:
         return 0.0
-
-    intersection = labels_a & labels_b
-    union = labels_a | labels_b
-    return len(intersection) / len(union)
+    return len(a & b) / len(a | b)
 
 
-# -------- SERENDIPITY POOL -------- #
-
-def pick_serendipity_posts(posts, fyp_so_far, n):
-    """
-    Pick posts that are intentionally dissimilar to what's already in the FYP.
-    This exposes users to new styles and mediums they haven't engaged with yet.
-
-    Scores each candidate by its MINIMUM similarity to any post already in the FYP —
-    picking the ones that are most unlike what the user normally sees.
-    """
-    candidates = [p for p in posts if p not in fyp_so_far]
-    if not candidates:
-        return []
-
-    def dissimilarity_score(post):
-        if not fyp_so_far:
-            return 1.0
-        sims = [tag_similarity(post["tags"], fp["tags"]) for fp in fyp_so_far]
-        return 1.0 - max(sims)  # Most unlike the most-similar post already in feed
-
-    candidates.sort(key=dissimilarity_score, reverse=True)
-    return candidates[:n]
-
-
-# -------- DIVERSITY-ENFORCED FEED ASSEMBLY -------- #
-
-def assemble_feed(scored_posts, top_n, diversity_threshold=0.45):
-    """
-    Greedily build the feed by picking high-scoring posts while enforcing
-    tag-level diversity. A candidate is skipped if it's too similar to
-    any post already selected.
-
-    diversity_threshold: max allowed tag_similarity to any post already in feed.
-                         Lower = more diverse feed.
-    """
-    sorted_posts = sorted(scored_posts, key=lambda x: x["score"], reverse=True)
-    feed = []
-    seen_tag_counts = defaultdict(int)
-
+def assemble_feed(scored: List[dict], n: int) -> tuple:
+    sorted_posts = sorted(scored, key=lambda x: x.get("score", 0), reverse=True)
+    feed, seen_tag_counts = [], defaultdict(int)
     for post in sorted_posts:
-        if len(feed) >= top_n:
+        if len(feed) >= n:
             break
-
-        # Check similarity against everything already in the feed
+        tags = post.get("mlTags") or {}
         too_similar = any(
-            tag_similarity(post["tags"], fp["tags"]) > diversity_threshold
+            tag_similarity(tags, fp.get("mlTags") or {}) > DIVERSITY_THRESHOLD
             for fp in feed
         )
         if too_similar:
             continue
-
         feed.append(post)
-
-        # Update seen tag counts for decay in future scoring passes
-        for tags in post["tags"].values():
-            for tag in tags:
-                seen_tag_counts[tag["label"]] += 1
-
+        if isinstance(tags, dict):
+            for tag_list in tags.values():
+                if isinstance(tag_list, list):
+                    for tag in tag_list:
+                        if isinstance(tag, dict) and "label" in tag:
+                            seen_tag_counts[tag["label"]] += 1
     return feed, seen_tag_counts
 
 
-# -------- MAIN FYP GENERATOR -------- #
+def pick_serendipity(posts: List[dict], feed: List[dict], n: int) -> List[dict]:
+    candidates = [p for p in posts if p not in feed]
+    if not candidates:
+        return []
+    def dissimilarity(post):
+        if not feed:
+            return 1.0
+        tags = post.get("mlTags") or {}
+        return 1.0 - max(tag_similarity(tags, fp.get("mlTags") or {}) for fp in feed)
+    candidates.sort(key=dissimilarity, reverse=True)
+    return candidates[:n]
 
-def generate_fyp(posts, user_affinity=None, top_n=20, exploration_factor=0.15):
-    """
-    Generate a personalised For You Page for a Loom user.
 
-    Args:
-        posts:              list of post dicts, each with a 'tags' key
-                            (same shape as /analyze output)
-        user_affinity:      output of build_user_affinity(), or None for new users
-        top_n:              number of posts to return
-        exploration_factor: controls randomness injected into scoring
+# ==========================================
+# PYDANTIC SCHEMAS
+# ==========================================
+class RecommendRequest(BaseModel):
+    posts: List[Dict[str, Any]]
+    user_id: Optional[str] = None
+    interaction_history: Optional[List[Dict[str, Any]]] = []
+    top_n: Optional[int] = 20
+    exploration_factor: Optional[float] = 0.15
 
-    Returns:
-        list of post dicts with 'score' added, sorted by score descending.
-    """
-    if user_affinity is None:
-        # Cold start: no interaction history — treat all tags as equally novel
-        user_affinity = {}
+class InteractionRequest(BaseModel):
+    user_id: str
+    post_id: str
+    interaction_type: str          # "like" or "comment"
+    all_post_ids: Optional[List[str]] = None
 
-    # How many slots are reserved for serendipity vs personalised
-    n_serendipity = max(1, int(top_n * SERENDIPITY_RATIO))
+
+# ==========================================
+# ENDPOINTS
+# ==========================================
+@app.get("/health")
+def health():
+    return {"status": "ok", "service": "loom-recommendation"}
+
+
+@app.post("/recommend")
+def recommend(req: RecommendRequest):
+    posts      = req.posts
+    user_id    = req.user_id
+    top_n      = req.top_n or 20
+    exploration = req.exploration_factor or 0.15
+
+    if not posts:
+        return []
+
+    affinity = build_user_affinity(req.interaction_history or [])
+
+    n_serendipity  = max(1, int(top_n * SERENDIPITY_RATIO))
     n_personalised = top_n - n_serendipity
 
-    # First pass: score all posts without decay (seen_tag_counts is empty)
-    empty_seen = defaultdict(int)
+    # First pass — score without tag decay
+    empty_seen: dict = {}
     for post in posts:
-        post["score"] = compute_post_score(
-            post["tags"], user_affinity, empty_seen, exploration_factor
-        )
+        post["score"]      = compute_hybrid_score(user_id, post, affinity, empty_seen, exploration)
+        post["ncf_weight"] = _model.ncf_weight(user_id) if user_id else 0.0
 
-    # Build the personalised portion with diversity enforcement
-    personalised_feed, seen_tag_counts = assemble_feed(posts, n_personalised)
+    personalised, seen_counts = assemble_feed(posts, n_personalised)
 
-    # Second pass: re-score remaining posts WITH decay from the personalised feed
-    # so serendipity picks are scored in the context of what's already shown
-    remaining = [p for p in posts if p not in personalised_feed]
+    # Second pass — re-score remainder with decay
+    remaining = [p for p in posts if p not in personalised]
     for post in remaining:
-        post["score"] = compute_post_score(
-            post["tags"], user_affinity, seen_tag_counts, exploration_factor
-        )
+        post["score"] = compute_hybrid_score(user_id, post, affinity, seen_counts, exploration)
 
-    # Pick serendipity posts — high dissimilarity to personalised feed
-    serendipity_posts = pick_serendipity_posts(remaining, personalised_feed, n_serendipity)
+    serendipity = pick_serendipity(remaining, personalised, n_serendipity)
+    for post in serendipity:
+        post["is_serendipity"] = True
 
-    # Combine and shuffle serendipity posts into the feed at random positions
-    # so they don't all cluster at the end
-    final_feed = personalised_feed + serendipity_posts
-    for post in serendipity_posts:
-        post["is_serendipity"] = True  # Flag so the frontend can optionally mark these
-
-    # Final sort by score — serendipity posts may rank anywhere
-    final_feed.sort(key=lambda x: x["score"], reverse=True)
-
-    return final_feed
+    final = personalised + serendipity
+    final.sort(key=lambda x: x.get("score", 0), reverse=True)
+    return final
 
 
-# -------- EXAMPLE USAGE -------- #
-
-if __name__ == "__main__":
-    # Simulate some posts with tags from the /analyze endpoint
-    mock_posts = [
-        {
-            "id": 1,
-            "tags": {
-                "medium": [{"label": "oil painting", "confidence": 0.31}],
-                "subject": [{"label": "portrait", "confidence": 0.29}, {"label": "figure study", "confidence": 0.24}],
-                "style": [{"label": "realism", "confidence": 0.27}],
-                "mood": [{"label": "melancholic", "confidence": 0.22}],
-                "color_palette": [{"label": "muted and desaturated", "confidence": 0.25}],
-                "aesthetic_features": [{"label": "heavy texture", "confidence": 0.23}],
-            }
-        },
-        {
-            "id": 2,
-            "tags": {
-                "medium": [{"label": "digital art", "confidence": 0.35}],
-                "subject": [{"label": "fantasy scene", "confidence": 0.33}],
-                "style": [{"label": "dark fantasy", "confidence": 0.28}, {"label": "painterly", "confidence": 0.21}],
-                "mood": [{"label": "mysterious", "confidence": 0.26}],
-                "color_palette": [{"label": "cool tones", "confidence": 0.24}],
-                "aesthetic_features": [{"label": "cinematic framing", "confidence": 0.22}],
-            }
-        },
-        {
-            "id": 3,
-            "tags": {
-                "medium": [{"label": "watercolor painting", "confidence": 0.28}],
-                "subject": [{"label": "botanical illustration", "confidence": 0.31}],
-                "style": [{"label": "impressionism", "confidence": 0.24}],
-                "mood": [{"label": "peaceful", "confidence": 0.27}],
-                "color_palette": [{"label": "pastel colors", "confidence": 0.26}, {"label": "warm tones", "confidence": 0.22}],
-                "aesthetic_features": [{"label": "soft gradients", "confidence": 0.21}],
-            }
-        },
-    ]
-
-    # Simulate a user who likes portraits and dark fantasy
-    mock_history = [
-        {"tags": mock_posts[0]["tags"], "weight": 1.5},  # saved
-        {"tags": mock_posts[1]["tags"], "weight": 1.0},  # liked
-    ]
-
-    affinity = build_user_affinity(mock_history)
-    fyp = generate_fyp(mock_posts, user_affinity=affinity, top_n=3)
-
-    for post in fyp:
-        serendipity = post.get("is_serendipity", False)
-        print(f"Post {post['id']} | Score: {post['score']} | Serendipity: {serendipity}")
+@app.post("/interaction")
+def interaction(req: InteractionRequest):
+    negatives = [pid for pid in (req.all_post_ids or []) if pid != req.post_id]
+    _model.update(
+        user_id=req.user_id,
+        post_id=req.post_id,
+        interaction_type=req.interaction_type,
+        negative_post_ids=negatives or None,
+    )
+    save_model()
+    logger.info(
+        f"[NCF] interaction recorded — user={req.user_id}, "
+        f"post={req.post_id}, type={req.interaction_type}, "
+        f"total_interactions={_model.user_interaction_counts.get(req.user_id, 0)}"
+    )
+    return {"ok": True, "ncf_weight": _model.ncf_weight(req.user_id)}

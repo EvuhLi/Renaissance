@@ -4,7 +4,7 @@
   "scripts": {
     "backend": "cd backend && node server.js",
     "frontend": "cd frontend && npm run dev",
-    "ml": "cd ml-service && venv\\Scripts\\uvicorn tagging:app --reload --port 8001",
+    "ml": "cd ml-service && venv\\Scripts\\uvicorn main_ml:app --reload --port 8001",
     "dev": "concurrently \"npm run backend\" \"npm run frontend\" \"npm run ml\""
   },
   "devDependencies": {
