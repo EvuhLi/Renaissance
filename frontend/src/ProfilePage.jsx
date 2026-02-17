@@ -44,7 +44,67 @@ const checkIsAI = async (file) => {
 };
 
 // ==========================================
-// 2. MAIN COMPONENT
+// 2. ML TAGGING UTILITY
+// ==========================================
+
+/**
+ * Sends the cloaked canvas to the Express backend proxy at /api/analyze,
+ * which forwards it server-side to the Python tagging service on port 8001.
+ * This avoids the browser making a direct cross-origin call to localhost:8001.
+ *
+ * The canvas is serialized as a base64 string — same pattern as /api/check-ai —
+ * so no new serialization strategy is needed on either end.
+ */
+const analyzeImageTags = async (canvas) => {
+  try {
+    // Extract base64 from the cloaked canvas (strip the data URL prefix)
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
+    const base64 = dataUrl.split(",")[1];
+
+    const response = await fetch(`${BACKEND_URL}/api/analyze`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ imageData: base64 }),
+    });
+
+    if (!response.ok) {
+      console.warn(`Tagging service returned ${response.status} — skipping ML tags.`);
+      return null;
+    }
+
+    return await response.json();
+  } catch (error) {
+    console.warn("Tagging proxy unavailable — skipping ML tags:", error.message);
+    return null;
+  }
+};
+
+/**
+ * Merges manual user tags (given a fixed confidence of 0.75) into the
+ * structured mlTags object under a dedicated "manual" category.
+ * Manual tags are de-duplicated against auto-generated labels.
+ */
+const mergeManualTags = (mlTagsRaw, userTagsArray) => {
+  const base = mlTagsRaw || {};
+
+  const existingLabels = new Set(
+    Object.values(base)
+      .flat()
+      .map((t) => t.label.toLowerCase())
+  );
+
+  const manualTags = userTagsArray
+    .filter((label) => !existingLabels.has(label.toLowerCase()))
+    .map((label) => ({ label, confidence: 0.75 }));
+
+  return {
+    ...base,
+    manual: manualTags,
+  };
+};
+
+// ==========================================
+// 3. MAIN COMPONENT
 // ==========================================
 const ProfilePage = () => {
   const { artistId } = useParams();
@@ -52,8 +112,9 @@ const ProfilePage = () => {
   const fileInputRef = useRef(null);
   const [isProtected, setIsProtected] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
+  const [scanStatus, setScanStatus] = useState("");
   const [selectedPost, setSelectedPost] = useState(null);
-  const [likedPosts, setLikedPosts] = useState({}); // Stores { postId: true/false }
+  const [likedPosts, setLikedPosts] = useState({});
   const [isNewPostOpen, setIsNewPostOpen] = useState(false);
   const [newDescription, setNewDescription] = useState("");
   const [newTags, setNewTags] = useState("");
@@ -65,15 +126,12 @@ const ProfilePage = () => {
   const [isCreatingAccount, setIsCreatingAccount] = useState(false);
   const [accountError, setAccountError] = useState("");
   const [profileError, setProfileError] = useState("");
+
   const toggleButton = async (postId) => {
     const wasLiked = !!likedPosts[postId];
     const delta = wasLiked ? -1 : 1;
 
-    setLikedPosts((prev) => ({
-      ...prev,
-      [postId]: !prev[postId],
-    }));
-
+    setLikedPosts((prev) => ({ ...prev, [postId]: !prev[postId] }));
     setPosts((prev) =>
       prev.map((post) =>
         (post._id || post.id) === postId
@@ -81,7 +139,6 @@ const ProfilePage = () => {
           : post
       )
     );
-
     setSelectedPost((prev) =>
       prev && (prev._id || prev.id) === postId
         ? { ...prev, likes: (prev.likes ?? 0) + delta }
@@ -94,10 +151,8 @@ const ProfilePage = () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ delta }),
       });
-
       if (!response.ok) throw new Error("Failed to update like");
       const updatedPost = await response.json();
-
       setPosts((prev) =>
         prev.map((post) =>
           (post._id || post.id) === postId ? updatedPost : post
@@ -109,10 +164,7 @@ const ProfilePage = () => {
     } catch (error) {
       console.error("Update Like Error:", error);
       const rollback = -delta;
-      setLikedPosts((prev) => ({
-        ...prev,
-        [postId]: wasLiked,
-      }));
+      setLikedPosts((prev) => ({ ...prev, [postId]: wasLiked }));
       setPosts((prev) =>
         prev.map((post) =>
           (post._id || post.id) === postId
@@ -127,7 +179,6 @@ const ProfilePage = () => {
       );
     }
   };
-  //   const [newComment, setNewComment] = useState("");
 
   const defaultUser = {
     username: "Loom_Artist_01",
@@ -139,7 +190,6 @@ const ProfilePage = () => {
   };
 
   const [user, setUser] = useState(null);
-
   const [posts, setPosts] = useState([]);
 
   const normalizeId = (value) => {
@@ -157,19 +207,9 @@ const ProfilePage = () => {
     );
     const postUsername =
       typeof post.user === "object" ? post.user.username : post.user;
-
-    if (resolvedArtistId) {
-      return String(postArtistId) === String(resolvedArtistId);
-    }
-
-    if (currentUserId && postArtistId) {
-      return String(postArtistId) === String(currentUserId);
-    }
-
-    if (currentUser?.username) {
-      return postUsername === currentUser.username;
-    }
-
+    if (resolvedArtistId) return String(postArtistId) === String(resolvedArtistId);
+    if (currentUserId && postArtistId) return String(postArtistId) === String(currentUserId);
+    if (currentUser?.username) return postUsername === currentUser.username;
     return true;
   });
 
@@ -232,42 +272,70 @@ const ProfilePage = () => {
     };
   }, []);
 
-  // --- UPLOAD & CLOAK FLOW ---
-  const handleFileChange = async (e) => {
+  const handleFileChange = (e) => {
     const file = e.target.files[0];
     if (!file) return;
     setNewImageFile(file);
   };
 
+  // ==========================================
+  // UPLOAD FLOW: AI check → Cloak → ML Tag → Merge → Save
+  // ==========================================
   const handleCreatePost = async () => {
     if (!newImageFile) return;
 
     setIsScanning(true);
-    const isAI = await checkIsAI(newImageFile);
 
+    // Step 1: AI detection
+    setScanStatus("Checking for AI generation...");
+    const isAI = await checkIsAI(newImageFile);
     if (isAI) {
       alert("BLOCKED: AI Generation detected.");
       setIsScanning(false);
+      setScanStatus("");
       return;
     }
 
+    // Step 2: Draw + cloak
+    setScanStatus("Applying protection layer...");
     const img = new Image();
     img.src = URL.createObjectURL(newImageFile);
+
     img.onload = async () => {
       const canvas = document.createElement("canvas");
       canvas.width = img.width;
       canvas.height = img.height;
       const ctx = canvas.getContext("2d");
       ctx.drawImage(img, 0, 0);
+      applyCloak(ctx, img.width, img.height);
 
-      applyCloak(ctx, img.width, img.height); // Apply invisible protection
+      // Step 3: ML tagging — routed through the Express backend proxy
+      // so the browser never makes a direct call to localhost:8001
+      setScanStatus("Analyzing artwork...");
+      const mlTagsRaw = await analyzeImageTags(canvas);
 
-      const cloakedUrl = canvas.toDataURL("image/jpeg", 0.9);
-      const tagsArray = newTags
+      // Step 4: Parse + merge manual tags into the structured mlTags object
+      const userTagsArray = newTags
         .split(/[,#]/)
         .map((t) => t.trim())
         .filter(Boolean);
+
+      const mergedMlTags = mergeManualTags(mlTagsRaw, userTagsArray);
+
+      // Step 5: Build flat tags array for legacy compatibility
+      const flatTags = [
+        ...userTagsArray,
+        ...Object.entries(mergedMlTags)
+          .filter(([cat]) => cat !== "manual")
+          .flatMap(([, tags]) => tags.map((t) => t.label)),
+      ];
+      const dedupedFlatTags = [...new Set(flatTags)];
+
+      // Step 6: Save post
+      setScanStatus("Saving post...");
+      const cloakedUrl = canvas.toDataURL("image/jpeg", 0.9);
       const currentUser = user || defaultUser;
+
       const payload = {
         user: currentUser.username,
         artistId: currentUser._id,
@@ -276,7 +344,8 @@ const ProfilePage = () => {
         url: cloakedUrl,
         title: newTitle.trim() || undefined,
         description: newDescription.trim() || undefined,
-        tags: tagsArray,
+        tags: dedupedFlatTags,
+        mlTags: mergedMlTags,
         date: new Date().toISOString(),
       };
 
@@ -289,21 +358,22 @@ const ProfilePage = () => {
 
         if (!response.ok) {
           const errorText = await response.text();
-          throw new Error(
-            `Failed to save post: ${response.status} ${response.statusText} ${errorText}`
-          );
+          throw new Error(`Failed to save post: ${response.status} ${errorText}`);
         }
+
         const savedPost = await response.json();
         setPosts((prev) => [savedPost, ...prev]);
         setIsNewPostOpen(false);
         setNewDescription("");
         setNewTags("");
+        setNewTitle("");
         setNewImageFile(null);
         if (fileInputRef.current) fileInputRef.current.value = "";
       } catch (error) {
         console.error("Save Post Error:", error);
       } finally {
         setIsScanning(false);
+        setScanStatus("");
       }
     };
   };
@@ -311,7 +381,6 @@ const ProfilePage = () => {
   const handleCreateAccount = async (e) => {
     e.preventDefault();
     if (!newAccountUsername.trim()) return;
-
     setIsCreatingAccount(true);
     setAccountError("");
     try {
@@ -319,24 +388,17 @@ const ProfilePage = () => {
         username: newAccountUsername.trim(),
         bio: newAccountBio.trim() || undefined,
         followersCount:
-          newAccountFollowers.trim() === ""
-            ? undefined
-            : Number(newAccountFollowers),
+          newAccountFollowers.trim() === "" ? undefined : Number(newAccountFollowers),
       };
-
       const response = await fetch(`${BACKEND_URL}/api/accounts`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-
       if (!response.ok) {
         const errorText = await response.text();
-        throw new Error(
-          `Failed to create account: ${response.status} ${response.statusText} ${errorText}`
-        );
+        throw new Error(`Failed to create account: ${response.status} ${errorText}`);
       }
-
       const created = await response.json();
       setUser(created);
       setNewAccountUsername("");
@@ -348,6 +410,12 @@ const ProfilePage = () => {
     } finally {
       setIsCreatingAccount(false);
     }
+  };
+
+  const postButtonLabel = () => {
+    if (!isScanning) return "Post";
+    if (scanStatus) return scanStatus;
+    return "Processing...";
   };
 
   return (
@@ -379,20 +447,14 @@ const ProfilePage = () => {
             min="0"
           />
           <div style={styles.accountActions}>
-            <button
-              type="submit"
-              style={styles.accountButton}
-              disabled={isCreatingAccount}
-            >
+            <button type="submit" style={styles.accountButton} disabled={isCreatingAccount}>
               {isCreatingAccount ? "Creating..." : "Create"}
             </button>
-            {accountError && (
-              <span style={styles.accountError}>{accountError}</span>
-            )}
+            {accountError && <span style={styles.accountError}>{accountError}</span>}
           </div>
         </form>
       </section>
-      {/* HEADER */}
+
       <header style={styles.header}>
         <div style={styles.profilePicBox}>
           <img
@@ -408,15 +470,13 @@ const ProfilePage = () => {
                 ? "Loading..."
                 : (user && user.username) || defaultUser.username}
             </h2>
-            {profileError && (
-              <span style={styles.accountError}>{profileError}</span>
-            )}
+            {profileError && <span style={styles.accountError}>{profileError}</span>}
             <button
               style={styles.uploadBtn}
               onClick={() => setIsNewPostOpen(true)}
               disabled={isScanning}
             >
-              {"New Post"}
+              New Post
             </button>
             <input
               type="file"
@@ -427,15 +487,9 @@ const ProfilePage = () => {
             />
           </div>
           <div style={styles.statsRow}>
-            <span>
-              <strong>{visiblePosts.length}</strong> drawings
-            </span>
-            <span>
-              <strong>{user?.followersCount ?? 0}</strong> followers
-            </span>
-            <span>
-              <strong>{(user?.following || []).length}</strong> following
-            </span>
+            <span><strong>{visiblePosts.length}</strong> drawings</span>
+            <span><strong>{user?.followersCount ?? 0}</strong> followers</span>
+            <span><strong>{(user?.following || []).length}</strong> following</span>
           </div>
           <p style={styles.bio}>{user?.bio || defaultUser.bio}</p>
         </div>
@@ -458,10 +512,7 @@ const ProfilePage = () => {
           <div style={styles.newPostModal} onClick={(e) => e.stopPropagation()}>
             <div style={styles.newPostHeader}>
               <h3 style={styles.newPostTitle}>Create new post</h3>
-              <button
-                style={styles.newPostClose}
-                onClick={() => setIsNewPostOpen(false)}
-              >
+              <button style={styles.newPostClose} onClick={() => setIsNewPostOpen(false)}>
                 ✕
               </button>
             </div>
@@ -474,7 +525,6 @@ const ProfilePage = () => {
                 style={styles.newPostInput}
                 placeholder="Give your artwork a title..."
               />
-
               <label style={styles.newPostLabel}>Description</label>
               <textarea
                 value={newDescription}
@@ -483,7 +533,6 @@ const ProfilePage = () => {
                 placeholder="Write something about your art..."
                 rows={4}
               />
-
               <label style={styles.newPostLabel}>Tags</label>
               <input
                 type="text"
@@ -492,7 +541,6 @@ const ProfilePage = () => {
                 style={styles.newPostInput}
                 placeholder="e.g. watercolor, nature, landscape"
               />
-
               <label style={styles.newPostLabel}>Image</label>
               <input
                 type="file"
@@ -501,14 +549,26 @@ const ProfilePage = () => {
                 accept="image/*"
                 style={styles.newPostFile}
               />
+              {newImageFile && (
+                <p style={styles.mlNote}>
+                  🎨 Artwork tags will be auto-generated by Loom after posting.
+                </p>
+              )}
             </div>
             <div style={styles.newPostFooter}>
+              {isScanning && scanStatus && (
+                <span style={styles.scanStatus}>{scanStatus}</span>
+              )}
               <button
-                style={styles.newPostPrimary}
+                style={{
+                  ...styles.newPostPrimary,
+                  opacity: isScanning || !newImageFile ? 0.6 : 1,
+                  cursor: isScanning || !newImageFile ? "not-allowed" : "pointer",
+                }}
                 onClick={handleCreatePost}
                 disabled={isScanning || !newImageFile}
               >
-                {isScanning ? "Scanning..." : "Post"}
+                {postButtonLabel()}
               </button>
             </div>
           </div>
@@ -518,9 +578,6 @@ const ProfilePage = () => {
   );
 };
 
-// ==========================================
-// 3. STYLES (Kept all protection UI)
-// ==========================================
 const styles = {
   container: {
     maxWidth: "935px",
@@ -548,11 +605,7 @@ const styles = {
     padding: "10px",
     fontFamily: "inherit",
   },
-  accountActions: {
-    display: "flex",
-    alignItems: "center",
-    gap: "12px",
-  },
+  accountActions: { display: "flex", alignItems: "center", gap: "12px" },
   accountButton: {
     backgroundColor: "#111",
     color: "white",
@@ -562,10 +615,7 @@ const styles = {
     fontWeight: "bold",
     cursor: "pointer",
   },
-  accountError: {
-    color: "#b42318",
-    fontSize: "12px",
-  },
+  accountError: { color: "#b42318", fontSize: "12px" },
   header: { display: "flex", marginBottom: "44px" },
   profilePicBox: { flex: 1, display: "flex", justifyContent: "center" },
   profilePic: {
@@ -593,17 +643,11 @@ const styles = {
   },
   statsRow: { display: "flex", gap: "30px", marginBottom: "20px" },
   bio: { fontWeight: "bold" },
-  divider: {
-    border: "0",
-    borderTop: "1px solid #dbdbdb",
-    marginBottom: "20px",
-  },
+  divider: { border: "0", borderTop: "1px solid #dbdbdb", marginBottom: "20px" },
   newPostOverlay: {
     position: "fixed",
-    top: 0,
-    left: 0,
-    width: "100%",
-    height: "100%",
+    top: 0, left: 0,
+    width: "100%", height: "100%",
     backgroundColor: "rgba(0,0,0,0.6)",
     display: "flex",
     justifyContent: "center",
@@ -626,18 +670,8 @@ const styles = {
     borderBottom: "1px solid #efefef",
   },
   newPostTitle: { margin: 0, fontSize: "18px" },
-  newPostClose: {
-    background: "none",
-    border: "none",
-    fontSize: "18px",
-    cursor: "pointer",
-  },
-  newPostBody: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "10px",
-    padding: "16px",
-  },
+  newPostClose: { background: "none", border: "none", fontSize: "18px", cursor: "pointer" },
+  newPostBody: { display: "flex", flexDirection: "column", gap: "10px", padding: "16px" },
   newPostLabel: { fontSize: "13px", fontWeight: "600", color: "#555" },
   newPostTextarea: {
     resize: "vertical",
@@ -652,14 +686,14 @@ const styles = {
     padding: "10px",
     fontFamily: "inherit",
   },
-  newPostFile: {
-    padding: "6px 0",
-  },
+  newPostFile: { padding: "6px 0" },
   newPostFooter: {
     padding: "16px",
     borderTop: "1px solid #efefef",
     display: "flex",
+    alignItems: "center",
     justifyContent: "flex-end",
+    gap: "12px",
   },
   newPostPrimary: {
     backgroundColor: "#0095f6",
@@ -670,6 +704,8 @@ const styles = {
     fontWeight: "bold",
     cursor: "pointer",
   },
+  mlNote: { fontSize: "12px", color: "#888", margin: "4px 0 0", fontStyle: "italic" },
+  scanStatus: { fontSize: "13px", color: "#555", fontStyle: "italic", flex: 1 },
 };
 
 export default ProfilePage;
