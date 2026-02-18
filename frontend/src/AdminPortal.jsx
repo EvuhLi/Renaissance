@@ -137,25 +137,62 @@ export default function AdminPortal() {
                 <tr key={p.id}>
                   <td style={styles.td}>
                     <div style={styles.username}>{p.username}</div>
-                    <div style={styles.sub}>Followers: {p.followersCount || 0}</div>
+                    <div style={styles.statGrid}>
+                      <div style={styles.metricCard}>
+                        <div style={styles.metricLabel}>Followers</div>
+                        <div style={styles.metricValue}>{p.followersCount || 0}</div>
+                      </div>
+                      <div style={styles.metricCard}>
+                        <div style={styles.metricLabel}>Posts</div>
+                        <div style={styles.metricValue}>{e.postsCount || 0}</div>
+                      </div>
+                    </div>
                     <div style={styles.sub}>Following: {p.followingCount || 0}</div>
-                    <div style={styles.sub}>Posts: {e.postsCount || 0}</div>
+                    <div style={styles.sub}>
+                      Last active: {e.lastActiveAt ? new Date(e.lastActiveAt).toLocaleDateString() : "N/A"}
+                    </div>
                   </td>
                   <td style={styles.td}>
-                    <div style={styles.sub}>Likes received: {e.likesReceived || 0}</div>
-                    <div style={styles.sub}>Comments received: {e.commentsReceived || 0}</div>
-                    <div style={styles.sub}>Likes given: {e.likesGiven || 0}</div>
+                    <div style={styles.statGrid}>
+                      <div style={styles.metricCard}>
+                        <div style={styles.metricLabel}>Likes Recv</div>
+                        <div style={styles.metricValue}>{e.likesReceived || 0}</div>
+                      </div>
+                      <div style={styles.metricCard}>
+                        <div style={styles.metricLabel}>Comments Recv</div>
+                        <div style={styles.metricValue}>{e.commentsReceived || 0}</div>
+                      </div>
+                      <div style={styles.metricCard}>
+                        <div style={styles.metricLabel}>Events</div>
+                        <div style={styles.metricValue}>{e.totalEvents || 0}</div>
+                      </div>
+                      <div style={styles.metricCard}>
+                        <div style={styles.metricLabel}>Likes Given</div>
+                        <div style={styles.metricValue}>{e.likesGiven || 0}</div>
+                      </div>
+                    </div>
                     <div style={styles.sub}>Comments made: {e.commentsMade || 0}</div>
-                    <div style={styles.sub}>Events: {e.totalEvents || 0}</div>
                   </td>
                   <td style={styles.td}>
                     <div style={styles.botMain}>{fmtPct(b.probability)}</div>
                     <div style={styles.sub}>Bot probability</div>
-                    <div style={styles.sub}>
-                      Behavior score: {Number(b?.behaviorFeatures?.botScore || 0).toFixed(4)}
+                    <div style={styles.botGrid}>
+                      <div style={styles.metricCard}>
+                        <div style={styles.metricLabel}>Behavior</div>
+                        <div style={styles.metricValue}>
+                          {Number(b?.behaviorFeatures?.behavioralBotScore || 0).toFixed(4)}
+                        </div>
+                      </div>
+                      <div style={styles.metricCard}>
+                        <div style={styles.metricLabel}>Network</div>
+                        <div style={styles.metricValue}>
+                          {Number(b?.behaviorFeatures?.network?.networkBotSignal || 0).toFixed(4)}
+                        </div>
+                      </div>
                     </div>
+                    <div style={styles.sub}>Fast replies: {fmtPct(b?.behaviorFeatures?.fastReplyPct || 0)}</div>
                     <div style={styles.sub}>
-                      Fast replies: {fmtPct(b?.behaviorFeatures?.fastReplyPct || 0)}
+                      Cluster density: {Number(b?.behaviorFeatures?.network?.communityDensity || 0).toFixed(4)}
                     </div>
                   </td>
                   <td style={styles.td}>
@@ -263,12 +300,47 @@ const styles = {
   sub: {
     fontSize: "12px",
     color: "#666",
-    marginBottom: "3px",
+    marginBottom: "6px",
   },
   botMain: {
     fontSize: "22px",
     fontWeight: 800,
     color: "#6B705C",
+  },
+  botGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(2, minmax(120px, 1fr))",
+    gap: "8px",
+    marginTop: "8px",
+    marginBottom: "10px",
+  },
+  statGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(2, minmax(120px, 1fr))",
+    gap: "8px",
+    marginTop: "8px",
+    marginBottom: "10px",
+  },
+  metricCard: {
+    border: "1px solid #e2ddcf",
+    borderRadius: "8px",
+    backgroundColor: "#faf8f2",
+    padding: "6px 8px",
+  },
+  metricLabel: {
+    fontSize: "11px",
+    color: "#777",
+    marginBottom: "2px",
+  },
+  metricValue: {
+    fontSize: "13px",
+    fontWeight: 700,
+    color: "#444",
+  },
+  metricValueTiny: {
+    fontSize: "12px",
+    fontWeight: 700,
+    color: "#444",
   },
   deleteBtn: {
     border: "none",
