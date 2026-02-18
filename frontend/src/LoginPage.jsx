@@ -46,7 +46,14 @@ export default function LoginPage() {
       if (response.ok && data.user) {
         localStorage.setItem("username", data.user.username);
         localStorage.setItem("accountId", data.user.id || "");
+        localStorage.setItem("role", data.user.role || "user");
+        if (data.user.adminToken) localStorage.setItem("adminToken", data.user.adminToken);
+        else localStorage.removeItem("adminToken");
         window.dispatchEvent(new Event("accountIdChanged"));
+        if (data.user.role === "admin") {
+          navigate("/admin");
+          return;
+        }
         const targetProfileId = data.user.id || localStorage.getItem("accountId");
         navigate(targetProfileId ? "/profile/" + encodeURIComponent(targetProfileId) : "/profile");
       } else {

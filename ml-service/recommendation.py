@@ -58,12 +58,16 @@ MIN_INTERACTIONS    = 5
 MAX_NCF_WEIGHT      = 0.65
 SERENDIPITY_RATIO   = 0.10
 TAG_DECAY_FACTOR    = 0.5
-DIVERSITY_THRESHOLD = 0.45
+DIVERSITY_THRESHOLD = 0.72
+TAG_COHESION_BOOST = 0.12
 
 INTERACTION_WEIGHTS = {
     "like":    1.0,
-    "comment": 0.8,
+    "comment": 0.85,
 }
+
+FOLLOW_BOOST = 0.12
+MAX_BEHAVIOR_PENALTY = 0.22
 
 CATEGORY_WEIGHTS = {
     "medium":             0.15,
@@ -284,20 +288,68 @@ def compute_tag_score(post_tags: dict, user_affinity: dict,
 
 def compute_hybrid_score(user_id: Optional[str], post: dict,
                          user_affinity: dict, seen_tag_counts: dict,
-                         exploration: float = 0.10) -> float:
+                         exploration: float = 0.10,
+                         followed_artist_ids: Optional[set] = None,
+                         creator_behavior_stats: Optional[Dict[str, Dict[str, Any]]] = None) -> float:
     post_id   = str(post.get("_id", ""))
+    artist_id = str(post.get("artistId", ""))
     post_tags = post.get("mlTags") or {}
     tag_score = compute_tag_score(post_tags, user_affinity, seen_tag_counts, exploration)
 
+    # Keep recommendation complexity intact; this is a small additive preference.
+    followed_boost = (
+        FOLLOW_BOOST
+        if followed_artist_ids and artist_id and artist_id in followed_artist_ids
+        else 0.0
+    )
+
+    creator_stats = (creator_behavior_stats or {}).get(artist_id, {})
+    features = creator_stats.get("behavior_features", {}) if isinstance(creator_stats, dict) else {}
+    bot_score = creator_stats.get("bot_score", features.get("botScore", 0.0)) if isinstance(creator_stats, dict) else 0.0
+    try:
+        bot_score = float(bot_score)
+    except Exception:
+        bot_score = 0.0
+    bot_score = min(1.0, max(0.0, bot_score))
+
+    # Mild behavior-based downrank using already-computed telemetry features.
+    # This preserves the existing recommendation complexity while using trust signals.
+    try:
+        fast_reply_pct = float(features.get("fastReplyPct", 0.0))
+    except Exception:
+        fast_reply_pct = 0.0
+    try:
+        circadian_flatness = float(features.get("circadianFlatness", 0.0))
+    except Exception:
+        circadian_flatness = 0.0
+    try:
+        interval_regularity = float(features.get("intervalRegularity", 0.0))
+    except Exception:
+        interval_regularity = 0.0
+
+    fast_reply_pct = min(1.0, max(0.0, fast_reply_pct))
+    circadian_flatness = min(1.0, max(0.0, circadian_flatness))
+    interval_regularity = min(1.0, max(0.0, interval_regularity))
+
+    suspiciousness = (
+        0.60 * bot_score +
+        0.15 * fast_reply_pct +
+        0.15 * circadian_flatness +
+        0.10 * interval_regularity
+    )
+    behavior_factor = 1.0 - (MAX_BEHAVIOR_PENALTY * suspiciousness)
+    behavior_factor = min(1.0, max(1.0 - MAX_BEHAVIOR_PENALTY, behavior_factor))
+
     if not user_id or not post_id:
-        return tag_score
+        return round(min(1.0, (tag_score + followed_boost) * behavior_factor), 4)
 
     alpha = _model.ncf_weight(user_id)
     if alpha == 0.0:
-        return tag_score
+        return round(min(1.0, (tag_score + followed_boost) * behavior_factor), 4)
 
     ncf_score = _model.predict(user_id, post_id)
-    return round(alpha * ncf_score + (1 - alpha) * tag_score, 4)
+    base = alpha * ncf_score + (1 - alpha) * tag_score
+    return round(min(1.0, (base + followed_boost) * behavior_factor), 4)
 
 
 # ==========================================
@@ -339,6 +391,29 @@ def assemble_feed(scored: List[dict], n: int) -> tuple:
     return feed, seen_tag_counts
 
 
+def apply_tag_cohesion_boost(posts: List[dict], boost: float = TAG_COHESION_BOOST) -> None:
+    """
+    Lightly boosts posts that share tags with other strong candidates so
+    network views have richer tag-linked structure.
+    """
+    if len(posts) < 2:
+        return
+    anchors = sorted(posts, key=lambda x: x.get("score", 0), reverse=True)[: min(16, len(posts))]
+    for post in posts:
+        tags = post.get("mlTags") or {}
+        sims = [
+            tag_similarity(tags, a.get("mlTags") or {})
+            for a in anchors
+            if a is not post
+        ]
+        if not sims:
+            continue
+        cohesion = max(sims)
+        if cohesion <= 0:
+            continue
+        post["score"] = round(min(1.0, float(post.get("score", 0)) + boost * cohesion), 4)
+
+
 def pick_serendipity(posts: List[dict], feed: List[dict], n: int) -> List[dict]:
     candidates = [p for p in posts if p not in feed]
     if not candidates:
@@ -359,6 +434,9 @@ class RecommendRequest(BaseModel):
     posts: List[Dict[str, Any]]
     user_id: Optional[str] = None
     interaction_history: Optional[List[Dict[str, Any]]] = []
+    followed_artist_ids: Optional[List[str]] = []
+    viewer_behavior_stats: Optional[Dict[str, Any]] = {}
+    creator_behavior_stats: Optional[Dict[str, Dict[str, Any]]] = {}
     top_n: Optional[int] = 20
     exploration_factor: Optional[float] = 0.15
 
@@ -388,6 +466,8 @@ def recommend(req: RecommendRequest):
         return []
 
     affinity = build_user_affinity(req.interaction_history or [])
+    followed_artist_ids = set(req.followed_artist_ids or [])
+    creator_behavior_stats = req.creator_behavior_stats or {}
 
     n_serendipity  = max(1, int(top_n * SERENDIPITY_RATIO))
     n_personalised = top_n - n_serendipity
@@ -395,16 +475,34 @@ def recommend(req: RecommendRequest):
     # First pass — score without tag decay
     empty_seen: dict = {}
     for post in posts:
-        post["score"]      = compute_hybrid_score(user_id, post, affinity, empty_seen, exploration)
+        post["score"]      = compute_hybrid_score(
+            user_id,
+            post,
+            affinity,
+            empty_seen,
+            exploration,
+            followed_artist_ids,
+            creator_behavior_stats,
+        )
         post["ncf_weight"] = _model.ncf_weight(user_id) if user_id else 0.0
 
+    apply_tag_cohesion_boost(posts)
     personalised, seen_counts = assemble_feed(posts, n_personalised)
 
     # Second pass — re-score remainder with decay
     remaining = [p for p in posts if p not in personalised]
     for post in remaining:
-        post["score"] = compute_hybrid_score(user_id, post, affinity, seen_counts, exploration)
+        post["score"] = compute_hybrid_score(
+            user_id,
+            post,
+            affinity,
+            seen_counts,
+            exploration,
+            followed_artist_ids,
+            creator_behavior_stats,
+        )
 
+    apply_tag_cohesion_boost(remaining, boost=TAG_COHESION_BOOST * 0.6)
     serendipity = pick_serendipity(remaining, personalised, n_serendipity)
     for post in serendipity:
         post["is_serendipity"] = True
