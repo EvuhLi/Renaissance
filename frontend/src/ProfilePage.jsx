@@ -742,10 +742,6 @@ const ProfilePage = () => {
               accept="image/*"
             />
           </div>
-          <div style={styles.statsRow}>
-            <span><strong>{visiblePosts.length}</strong> drawings</span>
-            <span><strong>{profileOwner.followersCount}</strong> followers</span>
-          </div>
           <p style={styles.bio}>{profileOwner.bio}</p>
         </header>
 
