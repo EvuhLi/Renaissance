@@ -8,6 +8,7 @@ import LoginPage from "./LoginPage";
 import SignUpPage from "./SignUpPage";
 import ProfilePage from "./ProfilePage";
 import AboutPage from "./AboutPage";
+import SearchPage from "./SearchPage";
 
 const GRADIENT = "linear-gradient(90deg, #3dd5f3, #b14dff)";
 const NAV_HEIGHT = 56; // keep content from hiding under fixed nav
@@ -95,6 +96,17 @@ function App() {
                 About
               </Link>
               <Link
+                to="/search"
+                style={{
+                  textDecoration: "none",
+                  fontWeight: 700,
+                  color: "#111",
+                  fontSize: "14px",
+                }}
+              >
+                Search
+              </Link>
+              <Link
                 to={profilePath}
                 style={{
                   textDecoration: "none",
@@ -138,6 +150,17 @@ function App() {
                 About
               </Link>
               <Link
+                to="/search"
+                style={{
+                  textDecoration: "none",
+                  fontWeight: 700,
+                  color: "#111",
+                  fontSize: "14px",
+                }}
+              >
+                Search
+              </Link>
+              <Link
                 to="/login"
                 style={{
                   textDecoration: "none",
@@ -161,6 +184,7 @@ function App() {
         <Route path="/profile" element={<ProfilePage />} />
         <Route path="/profile/:artistId" element={<ProfilePage />} />
         <Route path="/fyp" element={<FYP />} />
+        <Route path="/search" element={<SearchPage />} />
       </Routes>
     </BrowserRouter>
   );

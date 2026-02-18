@@ -126,7 +126,7 @@ export default function AboutZineScrollPage() {
   const palette = palettes[slides[active]?.accent] || palettes.pink;
 
   return (
-    <div style={{ ...page, background: palette.bg }}>
+    <div style={{ ...page, background: "#efe7d8" }}>
       <TopNav />
 
       <div ref={scrollerRef} style={scroller}>
@@ -141,8 +141,6 @@ export default function AboutZineScrollPage() {
               ref={(el) => (sectionRefs.current[idx] = el)}
               style={{ ...section, background: pal.bg }}
             >
-              <Aurora palette={pal} />
-
               <div style={contentWrap}>
                 <Slide s={s} palette={pal} active={isActive} />
               </div>
@@ -221,10 +219,17 @@ function SlideBG({ s, palette, active }) {
         <div style={bgVignette} />
       </div>
 
-      <AnimateBox active={active} style={{ ...floatCard, borderColor: "rgba(255,255,255,0.25)" }}>
-        <div style={{ ...kicker, color: "rgba(255,255,255,0.85)" }}>{s.kicker}</div>
-        <div style={{ ...title, color: "white" }}>{s.title}</div>
-        <div style={{ ...body, color: "rgba(255,255,255,0.86)" }}>{s.body}</div>
+      <AnimateBox
+        active={active}
+        style={{
+          ...floatCard,
+          background: "#ffffff",
+          borderColor: "rgba(0,0,0,0.3)",
+        }}
+      >
+        <div style={{ ...kicker, color: "#111111" }}>{s.kicker}</div>
+        <div style={{ ...title, color: "#111111" }}>{s.title}</div>
+        <div style={{ ...body, color: "#222222" }}>{s.body}</div>
       </AnimateBox>
 
       <Tape palette={palette} />
@@ -360,139 +365,99 @@ function Dots({ total, active, onJump, palette }) {
 
 const palettes = {
   pink: {
-    bg: "linear-gradient(135deg, #ffd6e7 0%, #c7b6ff 35%, #a6f6ff 70%, #fff3b0 100%)",
-    title: "rgba(10,10,20,0.92)",
-    body: "rgba(10,10,20,0.78)",
-    kicker: "rgba(10,10,20,0.65)",
-    line: "rgba(0,0,0,0.10)",
-    overlay:
-      "linear-gradient(180deg, rgba(255,255,255,0.02) 0%, rgba(0,0,0,0.18) 100%)",
-    bgTint:
-      "linear-gradient(120deg, rgba(255,0,180,0.35), rgba(0,220,255,0.22), rgba(255,255,255,0.0))",
-    auroraA:
-      "radial-gradient(circle at 30% 30%, rgba(255,0,150,0.35), rgba(255,255,255,0) 60%)",
-    auroraB:
-      "radial-gradient(circle at 30% 30%, rgba(0,200,255,0.30), rgba(255,255,255,0) 62%)",
-    auroraC:
-      "radial-gradient(circle at 30% 30%, rgba(0,255,170,0.22), rgba(255,255,255,0) 65%)",
-    blobA:
-      "radial-gradient(circle at 30% 30%, rgba(255,80,200,0.55), rgba(255,255,255,0) 65%)",
-    blobB:
-      "radial-gradient(circle at 30% 30%, rgba(0,220,255,0.45), rgba(255,255,255,0) 65%)",
-    blobC:
-      "radial-gradient(circle at 30% 30%, rgba(255,230,120,0.45), rgba(255,255,255,0) 70%)",
+    bg: "#efd7db",
+    title: "#121212",
+    body: "#232323",
+    kicker: "#6d1f39",
+    line: "rgba(0,0,0,0.24)",
+    overlay: "rgba(0,0,0,0.18)",
+    bgTint: "rgba(85, 19, 46, 0.36)",
+    auroraA: "transparent",
+    auroraB: "transparent",
+    auroraC: "transparent",
+    blobA: "rgba(162, 31, 73, 0.35)",
+    blobB: "rgba(25, 82, 115, 0.28)",
+    blobC: "rgba(29, 29, 29, 0.2)",
     grid:
-      "linear-gradient(rgba(0,0,0,0.07) 1px, transparent 1px), linear-gradient(90deg, rgba(0,0,0,0.07) 1px, transparent 1px)",
-    tape: "linear-gradient(90deg, rgba(255,255,255,0.55), rgba(255,255,255,0.20))",
-    dot: "rgba(10,10,20,0.75)",
+      "linear-gradient(rgba(0,0,0,0.15) 1px, transparent 1px), linear-gradient(90deg, rgba(0,0,0,0.15) 1px, transparent 1px)",
+    tape: "rgba(255,255,255,0.6)",
+    dot: "#1e1e1e",
   },
   cyan: {
-    bg: "linear-gradient(135deg, #b7fff3 0%, #a6d3ff 40%, #ffb6d5 80%, #fff2b6 100%)",
-    title: "rgba(10,10,20,0.92)",
-    body: "rgba(10,10,20,0.78)",
-    kicker: "rgba(10,10,20,0.65)",
-    line: "rgba(0,0,0,0.10)",
-    overlay:
-      "linear-gradient(180deg, rgba(255,255,255,0.02) 0%, rgba(0,0,0,0.18) 100%)",
-    bgTint:
-      "linear-gradient(120deg, rgba(0,220,255,0.35), rgba(120,140,255,0.22), rgba(255,255,255,0.0))",
-    auroraA:
-      "radial-gradient(circle at 30% 30%, rgba(0,220,255,0.33), rgba(255,255,255,0) 60%)",
-    auroraB:
-      "radial-gradient(circle at 30% 30%, rgba(255,0,180,0.22), rgba(255,255,255,0) 62%)",
-    auroraC:
-      "radial-gradient(circle at 30% 30%, rgba(120,255,210,0.20), rgba(255,255,255,0) 65%)",
-    blobA:
-      "radial-gradient(circle at 30% 30%, rgba(0,220,255,0.55), rgba(255,255,255,0) 65%)",
-    blobB:
-      "radial-gradient(circle at 30% 30%, rgba(130,120,255,0.45), rgba(255,255,255,0) 65%)",
-    blobC:
-      "radial-gradient(circle at 30% 30%, rgba(255,200,120,0.45), rgba(255,255,255,0) 70%)",
+    bg: "#cbe8e4",
+    title: "#111111",
+    body: "#202020",
+    kicker: "#0f5862",
+    line: "rgba(0,0,0,0.24)",
+    overlay: "rgba(0,0,0,0.18)",
+    bgTint: "rgba(8, 63, 70, 0.35)",
+    auroraA: "transparent",
+    auroraB: "transparent",
+    auroraC: "transparent",
+    blobA: "rgba(15, 88, 98, 0.32)",
+    blobB: "rgba(24, 47, 74, 0.22)",
+    blobC: "rgba(196, 146, 56, 0.22)",
     grid:
-      "linear-gradient(rgba(0,0,0,0.07) 1px, transparent 1px), linear-gradient(90deg, rgba(0,0,0,0.07) 1px, transparent 1px)",
-    tape: "linear-gradient(90deg, rgba(255,255,255,0.55), rgba(255,255,255,0.20))",
-    dot: "rgba(10,10,20,0.75)",
+      "linear-gradient(rgba(0,0,0,0.15) 1px, transparent 1px), linear-gradient(90deg, rgba(0,0,0,0.15) 1px, transparent 1px)",
+    tape: "rgba(255,255,255,0.6)",
+    dot: "#1e1e1e",
   },
   violet: {
-    bg: "linear-gradient(135deg, #c7b6ff 0%, #ffb6d5 35%, #a7f3ff 70%, #b9ffcc 100%)",
-    title: "rgba(10,10,20,0.92)",
-    body: "rgba(10,10,20,0.78)",
-    kicker: "rgba(10,10,20,0.65)",
-    line: "rgba(0,0,0,0.10)",
-    overlay:
-      "linear-gradient(180deg, rgba(255,255,255,0.02) 0%, rgba(0,0,0,0.18) 100%)",
-    bgTint:
-      "linear-gradient(120deg, rgba(140,120,255,0.35), rgba(255,0,180,0.22), rgba(255,255,255,0.0))",
-    auroraA:
-      "radial-gradient(circle at 30% 30%, rgba(140,120,255,0.35), rgba(255,255,255,0) 60%)",
-    auroraB:
-      "radial-gradient(circle at 30% 30%, rgba(255,0,180,0.22), rgba(255,255,255,0) 62%)",
-    auroraC:
-      "radial-gradient(circle at 30% 30%, rgba(0,255,170,0.18), rgba(255,255,255,0) 65%)",
-    blobA:
-      "radial-gradient(circle at 30% 30%, rgba(140,120,255,0.55), rgba(255,255,255,0) 65%)",
-    blobB:
-      "radial-gradient(circle at 30% 30%, rgba(255,80,200,0.40), rgba(255,255,255,0) 65%)",
-    blobC:
-      "radial-gradient(circle at 30% 30%, rgba(0,220,255,0.35), rgba(255,255,255,0) 70%)",
+    bg: "#d9cee6",
+    title: "#101010",
+    body: "#232323",
+    kicker: "#4f2b70",
+    line: "rgba(0,0,0,0.24)",
+    overlay: "rgba(0,0,0,0.18)",
+    bgTint: "rgba(56, 27, 84, 0.35)",
+    auroraA: "transparent",
+    auroraB: "transparent",
+    auroraC: "transparent",
+    blobA: "rgba(79, 43, 112, 0.35)",
+    blobB: "rgba(36, 82, 83, 0.2)",
+    blobC: "rgba(176, 112, 48, 0.2)",
     grid:
-      "linear-gradient(rgba(0,0,0,0.07) 1px, transparent 1px), linear-gradient(90deg, rgba(0,0,0,0.07) 1px, transparent 1px)",
-    tape: "linear-gradient(90deg, rgba(255,255,255,0.55), rgba(255,255,255,0.20))",
-    dot: "rgba(10,10,20,0.75)",
+      "linear-gradient(rgba(0,0,0,0.15) 1px, transparent 1px), linear-gradient(90deg, rgba(0,0,0,0.15) 1px, transparent 1px)",
+    tape: "rgba(255,255,255,0.6)",
+    dot: "#1e1e1e",
   },
   lime: {
-    bg: "linear-gradient(135deg, #b9ffcc 0%, #a7f3ff 35%, #c7b6ff 70%, #fff2b6 100%)",
-    title: "rgba(10,10,20,0.92)",
-    body: "rgba(10,10,20,0.78)",
-    kicker: "rgba(10,10,20,0.65)",
-    line: "rgba(0,0,0,0.10)",
-    overlay:
-      "linear-gradient(180deg, rgba(255,255,255,0.02) 0%, rgba(0,0,0,0.18) 100%)",
-    bgTint:
-      "linear-gradient(120deg, rgba(0,255,170,0.30), rgba(0,220,255,0.18), rgba(255,255,255,0.0))",
-    auroraA:
-      "radial-gradient(circle at 30% 30%, rgba(0,255,170,0.30), rgba(255,255,255,0) 60%)",
-    auroraB:
-      "radial-gradient(circle at 30% 30%, rgba(0,200,255,0.26), rgba(255,255,255,0) 62%)",
-    auroraC:
-      "radial-gradient(circle at 30% 30%, rgba(255,200,120,0.18), rgba(255,255,255,0) 65%)",
-    blobA:
-      "radial-gradient(circle at 30% 30%, rgba(0,255,170,0.55), rgba(255,255,255,0) 65%)",
-    blobB:
-      "radial-gradient(circle at 30% 30%, rgba(0,220,255,0.40), rgba(255,255,255,0) 65%)",
-    blobC:
-      "radial-gradient(circle at 30% 30%, rgba(255,80,200,0.32), rgba(255,255,255,0) 70%)",
+    bg: "#dfe9c9",
+    title: "#121212",
+    body: "#242424",
+    kicker: "#3d5f1d",
+    line: "rgba(0,0,0,0.24)",
+    overlay: "rgba(0,0,0,0.18)",
+    bgTint: "rgba(55, 83, 18, 0.34)",
+    auroraA: "transparent",
+    auroraB: "transparent",
+    auroraC: "transparent",
+    blobA: "rgba(61, 95, 29, 0.35)",
+    blobB: "rgba(14, 88, 98, 0.2)",
+    blobC: "rgba(127, 67, 24, 0.22)",
     grid:
-      "linear-gradient(rgba(0,0,0,0.07) 1px, transparent 1px), linear-gradient(90deg, rgba(0,0,0,0.07) 1px, transparent 1px)",
-    tape: "linear-gradient(90deg, rgba(255,255,255,0.55), rgba(255,255,255,0.20))",
-    dot: "rgba(10,10,20,0.75)",
+      "linear-gradient(rgba(0,0,0,0.15) 1px, transparent 1px), linear-gradient(90deg, rgba(0,0,0,0.15) 1px, transparent 1px)",
+    tape: "rgba(255,255,255,0.6)",
+    dot: "#1e1e1e",
   },
   orange: {
-    bg: "linear-gradient(135deg, #fff2b6 0%, #ffb6d5 35%, #a7f3ff 70%, #b9ffcc 100%)",
-    title: "rgba(10,10,20,0.92)",
-    body: "rgba(10,10,20,0.78)",
-    kicker: "rgba(10,10,20,0.65)",
-    line: "rgba(0,0,0,0.10)",
-    overlay:
-      "linear-gradient(180deg, rgba(255,255,255,0.02) 0%, rgba(0,0,0,0.18) 100%)",
-    bgTint:
-      "linear-gradient(120deg, rgba(255,200,80,0.34), rgba(255,0,180,0.20), rgba(255,255,255,0.0))",
-    auroraA:
-      "radial-gradient(circle at 30% 30%, rgba(255,200,80,0.32), rgba(255,255,255,0) 60%)",
-    auroraB:
-      "radial-gradient(circle at 30% 30%, rgba(255,0,180,0.22), rgba(255,255,255,0) 62%)",
-    auroraC:
-      "radial-gradient(circle at 30% 30%, rgba(0,220,255,0.18), rgba(255,255,255,0) 65%)",
-    blobA:
-      "radial-gradient(circle at 30% 30%, rgba(255,200,80,0.55), rgba(255,255,255,0) 65%)",
-    blobB:
-      "radial-gradient(circle at 30% 30%, rgba(255,80,200,0.35), rgba(255,255,255,0) 65%)",
-    blobC:
-      "radial-gradient(circle at 30% 30%, rgba(0,220,255,0.32), rgba(255,255,255,0) 70%)",
+    bg: "#edd1ad",
+    title: "#121212",
+    body: "#242424",
+    kicker: "#8a4c11",
+    line: "rgba(0,0,0,0.24)",
+    overlay: "rgba(0,0,0,0.18)",
+    bgTint: "rgba(86, 44, 5, 0.35)",
+    auroraA: "transparent",
+    auroraB: "transparent",
+    auroraC: "transparent",
+    blobA: "rgba(138, 76, 17, 0.35)",
+    blobB: "rgba(69, 37, 16, 0.2)",
+    blobC: "rgba(34, 84, 84, 0.18)",
     grid:
-      "linear-gradient(rgba(0,0,0,0.07) 1px, transparent 1px), linear-gradient(90deg, rgba(0,0,0,0.07) 1px, transparent 1px)",
-    tape: "linear-gradient(90deg, rgba(255,255,255,0.55), rgba(255,255,255,0.20))",
-    dot: "rgba(10,10,20,0.75)",
+      "linear-gradient(rgba(0,0,0,0.15) 1px, transparent 1px), linear-gradient(90deg, rgba(0,0,0,0.15) 1px, transparent 1px)",
+    tape: "rgba(255,255,255,0.6)",
+    dot: "#1e1e1e",
   },
 };
 
@@ -543,10 +508,9 @@ const textCard = {
   maxWidth: 780,
   borderRadius: 22,
   padding: "26px 26px",
-  background: "rgba(255,255,255,0.55)",
-  border: "1px solid rgba(0,0,0,0.10)",
+  background: "#fffaf0",
+  border: "2px solid rgba(0,0,0,0.25)",
   boxShadow: "0 18px 55px rgba(0,0,0,0.12)",
-  backdropFilter: "blur(16px)",
 };
 
 const floatCard = {
@@ -556,10 +520,9 @@ const floatCard = {
   maxWidth: 760,
   borderRadius: 22,
   padding: "26px 26px",
-  background: "rgba(255,255,255,0.45)",
-  border: "1px solid rgba(0,0,0,0.10)",
+  background: "#fffaf0",
+  border: "2px solid rgba(0,0,0,0.25)",
   boxShadow: "0 18px 55px rgba(0,0,0,0.12)",
-  backdropFilter: "blur(16px)",
 };
 
 const kicker = {
@@ -598,9 +561,8 @@ const imageFrame = {
   overflow: "hidden",
   position: "relative",
   boxShadow: "0 28px 90px rgba(0,0,0,0.18)",
-  border: "1px solid rgba(255,255,255,0.55)",
-  background: "rgba(255,255,255,0.35)",
-  backdropFilter: "blur(10px)",
+  border: "2px solid rgba(0,0,0,0.25)",
+  background: "#f5efe1",
 };
 
 const image = {
@@ -812,9 +774,8 @@ const nav = {
   justifyContent: "space-between",
   padding: "0 28px",
   zIndex: 80,
-  background: "rgba(255,255,255,0.35)",
-  borderBottom: "1px solid rgba(0,0,0,0.06)",
-  backdropFilter: "blur(14px)",
+  background: "#f8f3e8",
+  borderBottom: "2px solid rgba(0,0,0,0.25)",
 };
 
 const navLeft = { display: "flex", gap: 18, alignItems: "center" };
@@ -822,7 +783,7 @@ const navRight = { display: "flex", gap: 18, alignItems: "center" };
 
 const navLink = {
   textDecoration: "none",
-  color: "rgba(10,10,20,0.75)",
+  color: "#1f1f1f",
   fontSize: 12,
   letterSpacing: 1.5,
   fontWeight: 800,
@@ -833,7 +794,7 @@ const brand = {
   letterSpacing: 2,
   fontWeight: 900,
   textTransform: "lowercase",
-  color: "rgba(10,10,20,0.8)",
+  color: "#121212",
 };
 
 /* HUD */
@@ -844,12 +805,11 @@ const hintBar = {
   zIndex: 90,
   fontSize: 12,
   letterSpacing: 0.6,
-  color: "rgba(10,10,20,0.75)",
+  color: "#1f1f1f",
   padding: "10px 12px",
   borderRadius: 999,
-  background: "rgba(255,255,255,0.60)",
-  border: "1px solid rgba(0,0,0,0.10)",
-  backdropFilter: "blur(14px)",
+  background: "#fffaf0",
+  border: "2px solid rgba(0,0,0,0.25)",
 };
 
 const scrollIcon = { marginLeft: 8, fontWeight: 900 };
@@ -861,12 +821,11 @@ const miniProgress = {
   zIndex: 90,
   fontSize: 12,
   letterSpacing: 0.6,
-  color: "rgba(10,10,20,0.78)",
+  color: "#1f1f1f",
   padding: "10px 12px",
   borderRadius: 999,
-  background: "rgba(255,255,255,0.60)",
-  border: "1px solid rgba(0,0,0,0.10)",
-  backdropFilter: "blur(14px)",
+  background: "#fffaf0",
+  border: "2px solid rgba(0,0,0,0.25)",
 };
 
 const dotsWrap = {
@@ -879,9 +838,8 @@ const dotsWrap = {
   zIndex: 90,
   padding: "10px 12px",
   borderRadius: 999,
-  background: "rgba(255,255,255,0.55)",
-  border: "1px solid rgba(0,0,0,0.10)",
-  backdropFilter: "blur(14px)",
+  background: "#fffaf0",
+  border: "2px solid rgba(0,0,0,0.25)",
 };
 
 const dot = {
