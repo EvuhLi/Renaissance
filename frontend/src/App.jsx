@@ -5,6 +5,7 @@ import "./App.css";
 import FYP from "./FYP";
 import LandingPage from "./LandingPage";
 import LoginPage from "./LoginPage";
+import SignUpPage from "./SignUpPage";
 import ProfilePage from "./ProfilePage";
 import AboutPage from "./AboutPage";
 
@@ -98,6 +99,7 @@ function App() {
         <Route path="/" element={<LandingPage />} />
         <Route path="/about" element={<AboutPage />} />
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/signup" element={<SignUpPage />} />
         <Route path="/profile" element={<ProfilePage />} />
         <Route path="/profile/:artistId" element={<ProfilePage />} />
         <Route path="/fyp" element={<FYP />} />
