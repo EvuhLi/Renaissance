@@ -79,7 +79,7 @@ const CanvasImage = ({ src, fit = "cover", canvasStyle }) => {
 // TAG RENDERING HELPERS
 // ==========================================
 
-const INITIAL_VISIBLE = 5; // tags shown per group before "show more"
+const INITIAL_VISIBLE = 5; 
 
 const CATEGORY_LABELS = {
   medium: "medium",
@@ -139,7 +139,6 @@ const TagGroup = ({ label, tags, tagStyle, showCategory = false }) => {
           </span>
         ))}
 
-        {/* Show more / less toggle */}
         {!expanded && hiddenCount > 0 && (
           <button
             style={styles.expandBtn}
@@ -172,13 +171,76 @@ const Post = ({
   setSelectedPost,
   likedPosts,
   toggleButton,
+  addComment,
 }) => {
+  // Local state to prevent rapid-fire clicking
+  const [isProcessing, setIsProcessing] = useState(false);
+  // Local optimistic state to reduce lag and avoid transient negative counts
+  const [localLiked, setLocalLiked] = useState(null);
+  const [localLikes, setLocalLikes] = useState(null);
+
+  // Sync optimistic state when selectedPost or likedPosts change from parent
+  useEffect(() => {
+    if (!selectedPost) {
+      setLocalLiked(null);
+      setLocalLikes(null);
+      return;
+    }
+    const postId = String(selectedPost._id || selectedPost.id);
+    const currentLiked = !!(likedPosts?.[postId]);
+    setLocalLiked(currentLiked);
+    setLocalLikes(typeof selectedPost.likes === "number" ? selectedPost.likes : 0);
+  }, [selectedPost, likedPosts]);
+
+  const handleLikeClick = async (postId) => {
+    if (isProcessing) return;
+    setIsProcessing(true);
+    console.debug("handleLikeClick: start", { postId, isProcessing });
+    // Optimistically update local UI immediately to reduce perceived lag
+    setLocalLiked((prev) => {
+      const next = !prev;
+      setLocalLikes((l) => Math.max(0, (typeof l === "number" ? l : 0) + (next ? 1 : -1)));
+      return next;
+    });
+
+    // Call the parent toggle function (may update server / parent state)
+    try {
+      const result = await toggleButton(postId);
+      console.debug("handleLikeClick: toggleButton result", result);
+    } catch (err) {
+      // On error, revert optimistic change
+      setLocalLiked((prev) => {
+        const reverted = !prev;
+        setLocalLikes((l) => Math.max(0, (typeof l === "number" ? l : 0) + (reverted ? 1 : -1)));
+        return reverted;
+      });
+    } finally {
+      // Brief delay to let the state settle and prevent "button spam"
+      setTimeout(() => setIsProcessing(false), 400);
+    }
+  };
+
+  const [commentText, setCommentText] = useState("");
+
+  const handleCommentSubmit = async (e) => {
+    e.preventDefault();
+    if (!commentText || !commentText.trim()) return;
+    if (!selectedPost) return;
+    const postId = String(selectedPost._id || selectedPost.id);
+    try {
+      const updated = await addComment(postId, commentText.trim());
+      if (updated) setCommentText("");
+    } catch (err) {
+      console.error("Comment submit failed:", err);
+    }
+  };
+
   return (
     <>
       <div style={styles.grid}>
         {posts.map((post) => (
           <div
-            key={post._id || post.id}
+            key={String(post._id || post.id)}
             style={styles.gridItem}
             className="post-grid-item"
             onClick={() => setSelectedPost(post)}
@@ -290,23 +352,28 @@ const Post = ({
               <div style={styles.modalActions}>
                 <div style={{ fontSize: "50px", marginBottom: "5px", display: "flex", alignItems: "center", gap: "15px" }}>
                   {(() => {
-                    const postId = selectedPost._id || selectedPost.id;
-                    const isLiked = !!likedPosts[postId];
+                    const postId = String(selectedPost._id || selectedPost.id);
+                    const propLiked = !!likedPosts?.[postId];
+                    const isLiked = localLiked === null ? propLiked : !!localLiked;
                     return (
                       <GiShirtButton
-                        onClick={() => toggleButton(postId)}
+                        onClick={() => handleLikeClick(postId)}
                         style={{
-                          cursor: "pointer",
-                          color: isLiked ? "black" : "white",
-                          filter: isLiked ? "none" : "drop-shadow(0px 0px 1px rgba(0,0,0,0.5))",
-                          transition: "color 0.2s ease",
+                          cursor: isProcessing ? "default" : "pointer",
+                          color: isLiked ? "#000000" : "#ffffff",
+                          filter: isLiked
+                            ? "none"
+                            : "drop-shadow(0px 0px 2px rgba(0,0,0,0.3))",
+                          transition: "all 0.2s ease",
+                          transform: isLiked ? "scale(1.1)" : "scale(1)",
+                          opacity: isProcessing ? 0.7 : 1
                         }}
                       />
                     );
                   })()}
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
-                  <strong>{selectedPost.likes ?? 0} buttons</strong>
+                  <strong>{Math.max(0, (localLikes ?? selectedPost.likes ?? 0))} buttons</strong>
                   <strong style={{ color: "#8e8e8e", fontSize: "14px" }}>
                     {(selectedPost.comments || []).length} threads
                   </strong>
@@ -319,22 +386,22 @@ const Post = ({
                     key={c._id || c.createdAt || `${c.user || "comment"}-${index}`}
                     style={styles.commentItem}
                   >
-                    <strong>{c.user}</strong> {c.text}
+                    <strong>{c.user}</strong>
+                    <span style={{ marginLeft: 8 }}>{c.text}</span>
+                    <div style={{ color: "#999", fontSize: "12px" }}>
+                      {c.createdAt ? new Date(c.createdAt).toLocaleString() : ""}
+                    </div>
                   </div>
                 ))}
               </div>
 
-              <form
-                style={styles.commentForm}
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  setSelectedPost(null);
-                }}
-              >
+              <form style={styles.commentForm} onSubmit={handleCommentSubmit}>
                 <input
                   type="text"
                   placeholder="Add a comment..."
                   style={styles.commentInput}
+                  value={commentText}
+                  onChange={(e) => setCommentText(e.target.value)}
                 />
                 <button type="submit" style={styles.postBtn}>Post</button>
               </form>
@@ -346,9 +413,6 @@ const Post = ({
   );
 };
 
-// ==========================================
-// STYLES
-// ==========================================
 const styles = {
   grid: { display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "28px" },
   gridItem: {
@@ -430,8 +494,6 @@ const styles = {
   },
   title: { fontSize: "16px", fontWeight: "600", color: "#262626" },
   description: { fontSize: "14px", color: "#262626" },
-
-  // Tag section
   tagSection: { display: "flex", flexDirection: "column", gap: "10px" },
   tagGroup: { display: "flex", flexDirection: "column", gap: "5px" },
   tagGroupLabel: {
@@ -442,8 +504,6 @@ const styles = {
     letterSpacing: "0.05em",
   },
   tagRow: { display: "flex", flexWrap: "wrap", gap: "6px", alignItems: "center" },
-
-  // Manual tags
   tagManual: {
     fontSize: "13px",
     color: "#00376b",
@@ -452,8 +512,6 @@ const styles = {
     padding: "3px 10px",
     fontWeight: "500",
   },
-
-  // Auto tags
   tagAuto: {
     fontSize: "13px",
     color: "#555",
@@ -474,8 +532,6 @@ const styles = {
     textTransform: "uppercase",
     letterSpacing: "0.03em",
   },
-
-  // Expand/collapse button
   expandBtn: {
     fontSize: "12px",
     color: "#0095f6",
@@ -485,7 +541,6 @@ const styles = {
     padding: "2px 4px",
     fontWeight: "600",
   },
-
   commentList: { flex: 1, padding: "15px", overflowY: "auto" },
   commentItem: { marginBottom: "10px", fontSize: "14px" },
   modalActions: { padding: "15px", borderTop: "1px solid #efefef" },

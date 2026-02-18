@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@huggingface/inference": "^4.13.12",
+    "d3": "^7.8.5",
     "exifreader": "^4.36.1",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",

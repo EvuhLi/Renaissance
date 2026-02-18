@@ -2,7 +2,7 @@ import { BrowserRouter, Routes, Route, Link } from "react-router-dom";
 import { useState } from "react";
 import "./App.css";
 
-import FYP from "./FYP";
+import NetworkFYP from "./NetworkFYP";
 import LandingPage from "./LandingPage";
 import LoginPage from "./LoginPage";
 import SignUpPage from "./SignUpPage";
@@ -102,7 +102,7 @@ function App() {
         <Route path="/signup" element={<SignUpPage />} />
         <Route path="/profile" element={<ProfilePage />} />
         <Route path="/profile/:artistId" element={<ProfilePage />} />
-        <Route path="/fyp" element={<FYP />} />
+        <Route path="/fyp" element={<NetworkFYP />} />
       </Routes>
     </BrowserRouter>
   );

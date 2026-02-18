@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 
 const BACKEND_URL = "http://localhost:3001";
+// If true, liking requires an authenticated username and will redirect to /login
+const REQUIRE_LOGIN_FOR_LIKES = true;
 
 // ─── Serendipity badge ───────────────────────────────────────────────────────
 const SerendipityBadge = () => (
@@ -13,7 +15,7 @@ const SerendipityBadge = () => (
 // ─── Single full-screen post card ────────────────────────────────────────────
 const FYPCard = ({ post, username, onLike, likedPosts }) => {
   const navigate = useNavigate();
-  const postId = post._id || post.id;
+  const postId = String(post._id || post.id);
   const isLiked = !!likedPosts[postId];
 
   const handleArtistClick = (e) => {
@@ -81,6 +83,7 @@ const FYP = ({ username }) => {
 
   const containerRef = useRef(null);
   const isScrolling = useRef(false);
+  const navigate = useNavigate();
 
   // ── Fetch FYP feed ─────────────────────────────────────────────────────────
   const fetchFeed = useCallback(async () => {
@@ -130,30 +133,56 @@ const FYP = ({ username }) => {
 
   // ── Like handler ───────────────────────────────────────────────────────────
   const handleLike = useCallback(async (postId, wasLiked) => {
-    const activeUser = username || localStorage.getItem("username");
+    const rawUser = username || localStorage.getItem("username");
+    let activeUser;
+    if (!rawUser) {
+      if (REQUIRE_LOGIN_FOR_LIKES) {
+        navigate("/login");
+        return;
+      }
+      activeUser = "Loom_Artist_01";
+    } else {
+      activeUser = rawUser;
+    }
     const delta = wasLiked ? -1 : 1;
 
     // Optimistic update
     setLikedPosts(prev => ({ ...prev, [postId]: !wasLiked }));
     setPosts(prev =>
       prev.map(p =>
-        (p._id || p.id) === postId
+        String(p._id || p.id) === postId
           ? { ...p, likes: Math.max(0, (p.likes ?? 0) + delta) }
           : p
       )
     );
 
     try {
-      await fetch(`${BACKEND_URL}/api/posts/${postId}/like`, {
+      const res = await fetch(`${BACKEND_URL}/api/posts/${postId}/like`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ 
-          delta,
-          username: activeUser // Crucial for backend 'likedBy' filtering
-        }),
+        body: JSON.stringify({ username: activeUser }),
       });
 
-      // If it's a new like, tell ML service
+      if (!res.ok) throw new Error(`Like request failed: ${res.status}`);
+
+      const updatedPost = await res.json();
+
+      // Normalize server response
+      const norm = {
+        ...updatedPost,
+        _id: String(updatedPost._id),
+        artistId: updatedPost.artistId ? String(updatedPost.artistId) : updatedPost.artistId,
+        likes: typeof updatedPost.likes === "number" ? updatedPost.likes : Number(updatedPost.likes) || 0,
+        mlTags: updatedPost.mlTags || {},
+      };
+
+      // Replace local post with server version to avoid drift
+      setPosts(prev => prev.map(p => (String(p._id || p.id) === postId ? norm : p)));
+
+      // Update likedPosts based on server likedBy
+      const isNowLiked = norm.likedBy?.map(u => u.toLowerCase()).includes(activeUser?.toLowerCase());
+      setLikedPosts(prev => ({ ...prev, [postId]: Boolean(isNowLiked) }));
+
       if (!wasLiked) recordInteraction(postId, "like");
     } catch (err) {
       console.error("Like failed:", err);
@@ -161,8 +190,8 @@ const FYP = ({ username }) => {
       setLikedPosts(prev => ({ ...prev, [postId]: wasLiked }));
       setPosts(prev =>
         prev.map(p =>
-          (p._id || p.id) === postId
-            ? { ...p, likes: (p.likes ?? 0) - delta }
+          String(p._id || p.id) === postId
+            ? { ...p, likes: Math.max(0, (p.likes ?? 0) - delta) }
             : p
         )
       );

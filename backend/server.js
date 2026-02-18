@@ -151,7 +151,7 @@ app.get("/api/accounts/id/:id", async (req, res) => {
 app.get("/api/fyp", async (req, res) => {
   try {
     const { username } = req.query;
-    const limit = parseInt(req.query.limit) || 20;
+    const limit = Math.min(parseInt(req.query.limit) || 20, 100); // Cap at 100 for safety
 
     let query = {};
     if (username && username !== "undefined" && username !== "null") {
@@ -174,22 +174,30 @@ app.get("/api/fyp", async (req, res) => {
       mlTags: p.mlTags || {},
     }));
 
-    const pyResponse = await nodeFetch(`${ML_SERVICE_URL}/recommend/feed`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        posts: serializedPosts,
-        user_id: username || null,
-        top_n: limit,
-      }),
-    });
+    let recommended = null;
+    try {
+      const pyResponse = await nodeFetch(`${ML_SERVICE_URL}/recommendation/recommend`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          posts: serializedPosts,
+          user_id: username || null,
+          top_n: limit,
+        }),
+      });
 
-    if (!pyResponse.ok) {
-      console.warn("⚠️ Recommendation service failed. Using fallback.");
-      return res.json(serializedPosts.slice(0, limit));
+      if (!pyResponse.ok) {
+        console.warn("⚠️ Recommendation service returned non-OK status. Using fallback.");
+      } else {
+        recommended = await pyResponse.json();
+      }
+    } catch (fetchErr) {
+      console.warn("⚠️ Recommendation service unreachable — using fallback.", fetchErr.message || fetchErr);
     }
 
-    const recommended = await pyResponse.json();
+    // If ML service failed or returned non-OK, use the simple fallback
+    if (!recommended) return res.json(serializedPosts.slice(0, limit));
+
     res.json(recommended);
   } catch (err) {
     console.error("FYP Error:", err.message);
@@ -211,7 +219,7 @@ app.post("/api/interaction", async (req, res) => {
     const allPosts = await Post.find({}, "_id").lean();
     const allPostIds = allPosts.map((p) => p._id.toString());
 
-    await nodeFetch(`${ML_SERVICE_URL}/recommend/interaction`, {
+    await nodeFetch(`${ML_SERVICE_URL}/recommendation/interaction`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -298,24 +306,90 @@ app.patch("/api/posts/:id/like", async (req, res) => {
     const { id } = req.params;
     const { username } = req.body;
 
-    const updatedPost = await Post.findByIdAndUpdate(
-      id,
-      { 
-        $inc: { likes: 1 },
-        $addToSet: { likedBy: username }
-      },
-      { new: true }
-    );
+    if (!username) {
+      return res.status(400).json({ error: "Username required" });
+    }
 
-    if (!updatedPost)
+    const post = await Post.findById(id);
+    if (!post) {
       return res.status(404).json({ error: "Post not found" });
+    }
+
+    const normalizedUsername = username.trim().toLowerCase();
+
+    const alreadyLiked = post.likedBy
+      .map(u => u.toLowerCase())
+      .includes(normalizedUsername);
+
+
+    let updatedPost;
+
+    if (alreadyLiked) {
+      // 🔥 UNLIKE
+      updatedPost = await Post.findByIdAndUpdate(
+        id,
+        {
+          $pull: { likedBy: normalizedUsername },
+          $inc: { likes: -1 }
+        },
+        { new: true }
+      );
+
+    } else {
+      // 🔥 LIKE
+      updatedPost = await Post.findByIdAndUpdate(
+        id,
+        {
+          $addToSet: { likedBy: normalizedUsername },
+          $inc: { likes: 1 }
+        },
+        { new: true }
+      );
+    }
 
     res.json(updatedPost);
+
   } catch (err) {
-    console.error("Like Error:", err);
+    console.error("Like Toggle Error:", err);
     res.status(500).json({ error: "Internal Server Error" });
   }
 });
+
+// =============================
+// ADD COMMENT TO POST
+// =============================
+
+app.post("/api/posts/:id/comment", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { username, text } = req.body;
+
+    if (!username || !text) {
+      return res.status(400).json({ error: "username and text required" });
+    }
+
+    const post = await Post.findById(id);
+    if (!post) return res.status(404).json({ error: "Post not found" });
+
+    const comment = {
+      user: username,
+      text: String(text),
+      createdAt: new Date(),
+    };
+
+    const updated = await Post.findByIdAndUpdate(
+      id,
+      { $push: { comments: comment } },
+      { new: true }
+    );
+
+    res.json(updated);
+  } catch (err) {
+    console.error("Add Comment Error:", err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
 
 // =============================
 // ACCOUNTS
@@ -331,6 +405,67 @@ app.get("/api/accounts/:username", async (req, res) => {
     res.json(account);
   } catch (err) {
     console.error("Account Error:", err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+// =============================
+// FOLLOW / UNFOLLOW
+// =============================
+
+app.patch("/api/accounts/:username/follow", async (req, res) => {
+  try {
+    const { username } = req.params; // target to be followed/unfollowed
+    const { follower } = req.body; // who is performing the action
+
+    if (!follower || !username) {
+      return res.status(400).json({ error: "follower and username required" });
+    }
+
+    // Ensure both accounts exist (create follower on demand)
+    const target = await Account.findOne({ username });
+    if (!target) return res.status(404).json({ error: "Target account not found" });
+
+    const followerAccount = await Account.findOneAndUpdate(
+      { username: follower },
+      { $setOnInsert: { username: follower } },
+      { new: true, upsert: true }
+    );
+
+    const targetId = target._id;
+    const alreadyFollowing = (followerAccount.following || []).some((id) => String(id) === String(targetId));
+
+    let updatedFollower, updatedTarget;
+
+    if (alreadyFollowing) {
+      // unfollow
+      updatedFollower = await Account.findByIdAndUpdate(
+        followerAccount._id,
+        { $pull: { following: targetId } },
+        { new: true }
+      );
+      updatedTarget = await Account.findByIdAndUpdate(
+        targetId,
+        { $inc: { followersCount: -1 } },
+        { new: true }
+      );
+    } else {
+      // follow
+      updatedFollower = await Account.findByIdAndUpdate(
+        followerAccount._id,
+        { $addToSet: { following: targetId } },
+        { new: true }
+      );
+      updatedTarget = await Account.findByIdAndUpdate(
+        targetId,
+        { $inc: { followersCount: 1 } },
+        { new: true }
+      );
+    }
+
+    res.json({ target: updatedTarget, follower: updatedFollower, isFollowing: !alreadyFollowing });
+  } catch (err) {
+    console.error("Follow Toggle Error:", err);
     res.status(500).json({ error: "Internal Server Error" });
   }
 });
