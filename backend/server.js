@@ -402,6 +402,7 @@ app.post("/api/auth/register", async (req, res) => {
       username: usernameRaw,
       email: emailRaw || undefined,
       passwordHash: hashPassword(password),
+      profilePic: "",
       bio: "",
       followersCount: 0,
       following: [],
@@ -493,6 +494,41 @@ app.post("/api/posts/:id/comment", async (req, res) => {
 // =============================
 // ACCOUNTS
 // =============================
+
+app.patch("/api/accounts/:id/profile-pic", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { actorAccountId, profilePic } = req.body;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ error: "Invalid target account ID" });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(actorAccountId || "")) {
+      return res.status(400).json({ error: "Invalid actor account ID" });
+    }
+
+    if (String(id) !== String(actorAccountId)) {
+      return res.status(403).json({ error: "You can only update your own profile picture" });
+    }
+
+    if (!profilePic || typeof profilePic !== "string") {
+      return res.status(400).json({ error: "profilePic is required" });
+    }
+
+    const updated = await Account.findByIdAndUpdate(
+      id,
+      { profilePic },
+      { new: true }
+    );
+
+    if (!updated) return res.status(404).json({ error: "Account not found" });
+    res.json(updated);
+  } catch (err) {
+    console.error("Profile Pic Update Error:", err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
 
 app.get("/api/accounts/:username", async (req, res) => {
   try {
@@ -588,6 +624,7 @@ app.post("/api/accounts", async (req, res) => {
 
     const newAccount = await Account.create({
       username: username.trim(),
+      profilePic: "",
       bio: bio || "",
       followersCount: followersCount || 0,
       following: [],

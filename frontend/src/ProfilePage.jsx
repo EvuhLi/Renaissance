@@ -339,16 +339,46 @@ const ProfilePage = () => {
   };
 
   const handleSaveProfilePic = async () => {
+    if (!isOwnProfile) {
+      alert("You can only change your own profile picture.");
+      return;
+    }
     if (!newProfilePicFile) return;
+    if (!profileOwnerId || !currentUserId) {
+      alert("Could not verify account ownership.");
+      return;
+    }
     const reader = new FileReader();
     reader.onloadend = async () => {
-      const base64String = reader.result;
+      try {
+        const base64String = reader.result;
+        const response = await fetch(
+          `${BACKEND_URL}/api/accounts/${encodeURIComponent(profileOwnerId)}/profile-pic`,
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              actorAccountId: currentUserId,
+              profilePic: base64String,
+            }),
+          }
+        );
+        if (!response.ok) {
+          const errData = await response.json().catch(() => ({}));
+          throw new Error(errData.error || "Failed to save profile picture");
+        }
 
-      setUser((prev) => ({ ...prev, profilePic: base64String }));
-      setIsProfileUploadOpen(false);
-      setNewProfilePicFile(null);
-
-      // TODO: Persist to backend if needed.
+        const updated = await response.json();
+        setUser(updated);
+        setViewer((prev) =>
+          normalizeId(prev?._id) === normalizeId(updated?._id) ? updated : prev
+        );
+        setIsProfileUploadOpen(false);
+        setNewProfilePicFile(null);
+      } catch (err) {
+        console.error("Save profile picture failed:", err);
+        alert("Failed to save profile picture.");
+      }
     };
     reader.readAsDataURL(newProfilePicFile);
   };
@@ -634,16 +664,19 @@ const ProfilePage = () => {
             <div style={styles.polaroidFrame}>
               <div
                 className="profile-hover-container"
-                onClick={() => setIsProfileUploadOpen(true)}
+                onClick={isOwnProfile ? () => setIsProfileUploadOpen(true) : undefined}
+                style={{ cursor: isOwnProfile ? "pointer" : "default" }}
               >
                 <img
                   src={(user && user.profilePic) || defaultUser.profilePic}
                   alt="profile"
                   style={styles.profilePic}
                 />
-                <div className="plus-overlay">
-                  <span className="plus-icon">+</span>
-                </div>
+                {isOwnProfile && (
+                  <div className="plus-overlay">
+                    <span className="plus-icon">+</span>
+                  </div>
+                )}
               </div>
 
               <div style={styles.tapeCorner}></div>
