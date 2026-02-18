@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Link } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Link, useLocation } from "react-router-dom";
 import { useState, useEffect } from "react";
 import "./App.css";
 
@@ -14,10 +14,19 @@ const GRADIENT = "linear-gradient(90deg, #3dd5f3, #b14dff)";
 const NAV_HEIGHT = 56; // keep content from hiding under fixed nav
 
 function App() {
-  const [open, setOpen] = useState(false);
+  return (
+    <BrowserRouter>
+      <AppShell />
+    </BrowserRouter>
+  );
+}
+
+function AppShell() {
   const [accountId, setAccountId] = useState(
     typeof window !== "undefined" ? localStorage.getItem("accountId") : null
   );
+  const location = useLocation();
+  const hideNav = location.pathname === "/fyp";
   
   useEffect(() => {
     const handleStorageChange = () => {
@@ -36,8 +45,9 @@ function App() {
   const profilePath = storedAccountId ? "/profile/" + encodeURIComponent(storedAccountId) : "/profile";
 
   return (
-    <BrowserRouter>
+    <>
       {/* FIXED NAVBAR */}
+      {!hideNav && (
       <nav
         style={{
           position: "fixed",
@@ -63,7 +73,7 @@ function App() {
             textDecoration: "none",
             fontWeight: 900,
             letterSpacing: "0.4px",
-            color: "#111",
+            color: "#f3ede2",
           }}
         >
           LOOM
@@ -175,6 +185,7 @@ function App() {
           )}
         </div>
       </nav>
+      )}
 
       <Routes>
         <Route path="/" element={<LandingPage />} />
@@ -186,7 +197,7 @@ function App() {
         <Route path="/fyp" element={<NetworkFYP />} />
         <Route path="/search" element={<SearchPage />} />
       </Routes>
-    </BrowserRouter>
+    </>
   );
 }
 

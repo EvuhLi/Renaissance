@@ -14,7 +14,18 @@ const NetworkCanvas = ({
   const canvasRef = useRef(null);
   const isDragging = useRef(false);
   const dragStart = useRef({ x: 0, y: 0 });
+  const [isDraggingState, setIsDraggingState] = useState(false);
   const [hoveredNodeId, setHoveredNodeId] = useState(null);
+  const imageCacheRef = useRef(new Map());
+
+  const toWorld = (screenX, screenY) => {
+    const cx = width / 2;
+    const cy = height / 2;
+    return {
+      x: cx + (screenX - cx - pan.x) / scale,
+      y: cy + (screenY - cy - pan.y) / scale,
+    };
+  };
 
   // Set up non-passive wheel listener
   useEffect(() => {
@@ -23,31 +34,55 @@ const NetworkCanvas = ({
 
     const handleWheel = (e) => {
       e.preventDefault();
-      const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
+      const zoomFactor = e.deltaY > 0 ? 0.92 : 1.08;
       const newScale = Math.max(0.5, Math.min(3, scale * zoomFactor));
+
+      const rect = canvas.getBoundingClientRect();
+      const pointerX = e.clientX - rect.left;
+      const pointerY = e.clientY - rect.top;
+
+      // Zoom around cursor so posts (not background) scale as expected.
+      const cx = width / 2;
+      const cy = height / 2;
+      const before = {
+        x: cx + (pointerX - cx - pan.x) / scale,
+        y: cy + (pointerY - cy - pan.y) / scale,
+      };
+      const newPan = {
+        x: pointerX - cx - (before.x - cx) * newScale,
+        y: pointerY - cy - (before.y - cy) * newScale,
+      };
+
       onPanZoom?.({
-        pan,
+        pan: newPan,
         scale: newScale,
       });
     };
 
     canvas.addEventListener("wheel", handleWheel, { passive: false });
     return () => canvas.removeEventListener("wheel", handleWheel);
-  }, [scale, pan, onPanZoom]);
+  }, [scale, pan, onPanZoom, width, height]);
+
+  useEffect(() => {
+    nodes.forEach((node) => {
+      const url = node?.post?.url;
+      if (!url || imageCacheRef.current.has(url)) return;
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.src = url;
+      imageCacheRef.current.set(url, img);
+    });
+  }, [nodes]);
 
   // Draw the network
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || !nodes || nodes.length === 0) {
-      console.log("Canvas not ready:", { canvas: !!canvas, nodes: nodes?.length });
       return;
     }
 
-    console.log("Drawing canvas with nodes:", nodes.length);
-
     const ctx = canvas.getContext("2d");
     if (!ctx) {
-      console.log("Could not get canvas context");
       return;
     }
 
@@ -58,7 +93,7 @@ const NetworkCanvas = ({
     ctx.scale(dpr, dpr);
 
     // Clear canvas
-    ctx.fillStyle = "#000";
+    ctx.fillStyle = "#E8E4D9";
     ctx.fillRect(0, 0, width, height);
 
     // Apply pan and zoom
@@ -67,82 +102,100 @@ const NetworkCanvas = ({
     ctx.scale(scale, scale);
     ctx.translate(-width / 2, -height / 2);
 
-    // Draw links
-    ctx.strokeStyle = "rgba(167, 139, 250, 0.2)";
-    ctx.lineWidth = 1;
-    let linksDrawn = 0;
+    // Draw relevance links as "strings".
     links.forEach((link) => {
       if (link.source && link.target) {
+        const strength = Math.max(0.08, Math.min(1, link.strength || 0.2));
+        ctx.strokeStyle = `rgba(107, 112, 92, ${0.32 + strength * 0.5})`;
+        ctx.lineWidth = 1.6 + strength * 2.8;
         ctx.beginPath();
         ctx.moveTo(link.source.x, link.source.y);
         ctx.lineTo(link.target.x, link.target.y);
         ctx.stroke();
-        linksDrawn++;
       }
     });
-    console.log("Links drawn:", linksDrawn);
 
-    // Draw nodes
+    // Draw square nodes.
     nodes.forEach((node) => {
       const isSelected = node.id === selectedNodeId;
       const isHovered = node.id === hoveredNodeId;
+      const side = node.size;
+      const half = side / 2;
+      const left = node.x - half;
+      const top = node.y - half;
+      const corner = Math.max(8, side * 0.07);
 
-      // Node circle background
       ctx.fillStyle = isSelected
-        ? "rgba(167, 139, 250, 0.4)"
+        ? "rgba(203, 153, 126, 0.34)"
         : isHovered
-        ? "rgba(167, 139, 250, 0.3)"
-        : "rgba(167, 139, 250, 0.1)";
+        ? "rgba(165, 165, 141, 0.3)"
+        : "rgba(165, 165, 141, 0.2)";
       ctx.strokeStyle = isSelected
-        ? "rgba(167, 139, 250, 0.8)"
+        ? "rgba(203, 153, 126, 0.95)"
         : isHovered
-        ? "rgba(167, 139, 250, 0.5)"
-        : "rgba(167, 139, 250, 0.3)";
+        ? "rgba(165, 165, 141, 0.78)"
+        : "rgba(165, 165, 141, 0.55)";
       ctx.lineWidth = isSelected ? 3 : 2;
 
       ctx.beginPath();
-      ctx.arc(node.x, node.y, node.radius, 0, Math.PI * 2);
+      ctx.roundRect(left, top, side, side, corner);
       ctx.fill();
       ctx.stroke();
 
-      // Draw thumbnail image if available
       if (node.post && node.post.url) {
-        const thumbSize = node.radius * 0.8;
-        // Store image drawing for async load
-        drawImageCircle(ctx, node.post.url, node.x, node.y, thumbSize);
+        const img = imageCacheRef.current.get(node.post.url);
+        if (img && img.complete && img.naturalWidth > 0) {
+          ctx.save();
+          ctx.beginPath();
+          ctx.roundRect(left + 3, top + 3, side - 6, side - 6, Math.max(6, corner - 2));
+          ctx.clip();
+          const imgRatio = img.naturalWidth / img.naturalHeight;
+          const boxRatio = (side - 6) / (side - 6);
+          let sx = 0;
+          let sy = 0;
+          let sw = img.naturalWidth;
+          let sh = img.naturalHeight;
+          if (imgRatio > boxRatio) {
+            sw = img.naturalHeight * boxRatio;
+            sx = (img.naturalWidth - sw) / 2;
+          } else {
+            sh = img.naturalWidth / boxRatio;
+            sy = (img.naturalHeight - sh) / 2;
+          }
+          ctx.drawImage(
+            img,
+            sx,
+            sy,
+            sw,
+            sh,
+            left + 3,
+            top + 3,
+            side - 6,
+            side - 6
+          );
+          ctx.restore();
+        }
       }
     });
-    console.log("Nodes drawn:", nodes.length);
 
     ctx.restore();
   }, [nodes, links, width, height, selectedNodeId, hoveredNodeId, scale, pan]);
 
-  // Helper to draw image in circle (with fallback)
-  const drawImageCircle = (ctx, imgUrl, x, y, radius) => {
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.onload = () => {
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(x, y, radius, 0, Math.PI * 2);
-      ctx.clip();
-      ctx.drawImage(img, x - radius, y - radius, radius * 2, radius * 2);
-      ctx.restore();
-    };
-    img.src = imgUrl;
-  };
-
   // Get node at point for click detection
   const getNodeAtPoint = (canvasX, canvasY) => {
     const rect = canvasRef.current.getBoundingClientRect();
-    const x = (canvasX - rect.left - pan.x) / scale;
-    const y = (canvasY - rect.top - pan.y) / scale;
+    const screenX = canvasX - rect.left;
+    const screenY = canvasY - rect.top;
+    const { x, y } = toWorld(screenX, screenY);
 
     for (const node of nodes) {
-      const dx = node.x - x;
-      const dy = node.y - y;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      if (dist < node.radius) {
+      const half = node.size / 2;
+      if (
+        x >= node.x - half &&
+        x <= node.x + half &&
+        y >= node.y - half &&
+        y <= node.y + half
+      ) {
         return node;
       }
     }
@@ -172,6 +225,7 @@ const NetworkCanvas = ({
       onNodeClick?.(node);
     } else {
       isDragging.current = true;
+      setIsDraggingState(true);
       dragStart.current = { x: e.clientX, y: e.clientY };
     }
   };
@@ -179,13 +233,10 @@ const NetworkCanvas = ({
   // Mouse up to stop dragging
   const handleMouseUp = () => {
     isDragging.current = false;
+    setIsDraggingState(false);
   };
 
   // Wheel for zoom
-  const handleWheelIgnored = (e) => {
-    // Handled in useEffect with proper passive: false
-  };
-
   return (
     <canvas
       ref={canvasRef}
@@ -193,8 +244,8 @@ const NetworkCanvas = ({
         display: "block",
         width: "100%",
         height: "100%",
-        cursor: hoveredNodeId ? "pointer" : isDragging.current ? "grabbing" : "grab",
-        backgroundColor: "#000",
+        cursor: hoveredNodeId ? "pointer" : isDraggingState ? "grabbing" : "grab",
+        backgroundColor: "#E8E4D9",
       }}
       onMouseMove={handleMouseMove}
       onMouseDown={handleMouseDown}

@@ -1,15 +1,19 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
-import { useNavigate } from "react-router-dom";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import { useForceSimulation } from "./hooks/useForceSimulation";
 import NetworkCanvas from "./components/NetworkCanvas";
 import PostModal from "./components/PostModal";
 
 const BACKEND_URL = "http://localhost:3001";
-const BATCH_SIZE = 12;
+const INITIAL_VISIBLE_NODES = 28;
+const FETCH_LIMIT = 80;
+const LOAD_MORE_STEP = 16;
+const NETWORK_LINK_THRESHOLD = 0.12;
 
 const NetworkFYP = ({ username }) => {
   const [posts, setPosts] = useState([]);
   const [allPosts, setAllPosts] = useState([]); // All posts ever loaded
+  const [searchQuery, setSearchQuery] = useState("");
   const [likedPosts, setLikedPosts] = useState({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -17,75 +21,128 @@ const NetworkFYP = ({ username }) => {
   const [selectedPost, setSelectedPost] = useState(null);
   const [scale, setScale] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
-  const [canvasSize, setCanvasSize] = useState({ width: window.innerWidth, height: window.innerHeight });
+  const [canvasSize, setCanvasSize] = useState({
+    width: window.innerWidth,
+    height: window.innerHeight,
+  });
   
   const containerRef = useRef(null);
   const navigate = useNavigate();
+  const activeUser = username || localStorage.getItem("username") || "";
+  const accountId = localStorage.getItem("accountId") || "";
+  const profilePath = accountId ? `/profile/${encodeURIComponent(accountId)}` : "/profile";
 
-  // Update canvas size on window resize
+  // Keep canvas in sync with actual container dimensions.
   useEffect(() => {
-    const handleResize = () => {
-      setCanvasSize({ width: window.innerWidth, height: window.innerHeight });
+    const updateFromContainer = () => {
+      const el = containerRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      setCanvasSize({
+        width: Math.max(1, Math.floor(rect.width)),
+        height: Math.max(1, Math.floor(rect.height)),
+      });
     };
-    window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
+
+    updateFromContainer();
+    const observer = new ResizeObserver(updateFromContainer);
+    if (containerRef.current) observer.observe(containerRef.current);
+    window.addEventListener("resize", updateFromContainer);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", updateFromContainer);
+    };
   }, []);
 
-  // Force simulation hook - use actual canvas size
-  const { nodes, simulation } = useForceSimulation(posts, canvasSize.width, canvasSize.height);
+  const filteredPosts = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return posts;
+    return posts.filter((post) => {
+      const user = String(post.user || "").toLowerCase();
+      const title = String(post.title || "").toLowerCase();
+      const description = String(post.description || "").toLowerCase();
+      const tags = Array.isArray(post.tags)
+        ? post.tags.map((t) => String(t || "").toLowerCase()).join(" ")
+        : "";
+      const mlTags = post?.mlTags && typeof post.mlTags === "object"
+        ? Object.values(post.mlTags)
+            .flat()
+            .map((t) => String(t?.label || "").toLowerCase())
+            .join(" ")
+        : "";
+      return (
+        user.includes(q) ||
+        title.includes(q) ||
+        description.includes(q) ||
+        tags.includes(q) ||
+        mlTags.includes(q)
+      );
+    });
+  }, [posts, searchQuery]);
 
-  // Build links from posts for canvas rendering
-  const buildLinks = useCallback(() => {
+  // Force simulation hook - use actual canvas size
+  const { nodes } = useForceSimulation(filteredPosts, canvasSize.width, canvasSize.height);
+
+  const links = useMemo(() => {
     if (!nodes.length) return [];
-    
-    const TAG_SIMILARITY_THRESHOLD = 0.4;
-    
-    const calculateTagSimilarity = (tagsA, tagsB) => {
-      if (!tagsA || !tagsB) return 0;
-      const extractLabels = (tags) => {
-        if (!tags || typeof tags !== "object") return new Set();
-        const labels = new Set();
-        Object.values(tags).forEach((tagList) => {
+
+    const extractLabels = (post) => {
+      const labels = new Set();
+      if (post?.mlTags && typeof post.mlTags === "object") {
+        Object.values(post.mlTags).forEach((tagList) => {
           if (Array.isArray(tagList)) {
             tagList.forEach((tag) => {
-              if (tag && tag.label) labels.add(tag.label);
+              const label = String(tag?.label || "").trim().toLowerCase();
+              if (label) labels.add(label);
             });
           }
         });
-        return labels;
-      };
-      const labelsA = extractLabels(tagsA);
-      const labelsB = extractLabels(tagsB);
-      if (labelsA.size === 0 || labelsB.size === 0) return 0;
-      const intersection = new Set([...labelsA].filter((x) => labelsB.has(x)));
-      const union = new Set([...labelsA, ...labelsB]);
-      return intersection.size / union.size;
+      }
+      if (Array.isArray(post?.tags)) {
+        post.tags.forEach((tag) => {
+          const label = String(tag || "").trim().toLowerCase();
+          if (label) labels.add(label);
+        });
+      }
+      return labels;
     };
 
-    const links = [];
-    for (let i = 0; i < posts.length; i++) {
-      for (let j = i + 1; j < posts.length; j++) {
-        const similarity = calculateTagSimilarity(posts[i].mlTags, posts[j].mlTags);
-        if (similarity > TAG_SIMILARITY_THRESHOLD) {
-          links.push({
+    const similarity = (labelsA, labelsB) => {
+      if (!labelsA.size || !labelsB.size) return 0;
+      const intersection = new Set([...labelsA].filter((x) => labelsB.has(x)));
+      const union = new Set([...labelsA, ...labelsB]);
+      return union.size ? intersection.size / union.size : 0;
+    };
+
+    const labelsByIndex = nodes.map((n) => extractLabels(n.post));
+    const built = [];
+
+    for (let i = 0; i < nodes.length; i++) {
+      const candidates = [];
+      for (let j = i + 1; j < nodes.length; j++) {
+        const score = similarity(labelsByIndex[i], labelsByIndex[j]);
+        if (score >= NETWORK_LINK_THRESHOLD) {
+          candidates.push({
             source: nodes[i],
             target: nodes[j],
-            strength: similarity,
+            strength: score,
           });
         }
       }
+      candidates
+        .sort((a, b) => b.strength - a.strength)
+        .slice(0, 7)
+        .forEach((link) => built.push(link));
     }
-    return links;
-  }, [posts, nodes]);
 
-  const links = buildLinks();
+    return built;
+  }, [nodes]);
 
   // Fetch initial batch of posts
-  const fetchPostsBatch = useCallback(async (limit = BATCH_SIZE) => {
+  const fetchPostsBatch = useCallback(async (limit = FETCH_LIMIT) => {
     setLoading(true);
     setError("");
     try {
-      const activeUser = username || localStorage.getItem("username");
       const params = new URLSearchParams({ limit });
       if (activeUser && activeUser !== "null" && activeUser !== "undefined") {
         params.set("username", activeUser);
@@ -96,7 +153,7 @@ const NetworkFYP = ({ username }) => {
 
       const data = await res.json();
       setAllPosts(data);
-      setPosts(data.slice(0, BATCH_SIZE));
+      setPosts(data.slice(0, INITIAL_VISIBLE_NODES));
       
       // Mark liked posts
       const liked = {};
@@ -113,22 +170,12 @@ const NetworkFYP = ({ username }) => {
     } finally {
       setLoading(false);
     }
-  }, [username]);
+  }, [activeUser]);
 
   // Initial fetch
   useEffect(() => {
     fetchPostsBatch();
   }, [fetchPostsBatch]);
-
-  useEffect(() => {
-    console.log("NetworkFYP state:", {
-      postsLoaded: posts.length,
-      nodesGenerated: nodes.length,
-      allPostsCount: allPosts.length,
-      loading,
-      error,
-    });
-  }, [posts, nodes, allPosts, loading, error]);
 
   // Detect when user pans to edge and load more posts
   const checkBoundsAndLoadMore = useCallback(() => {
@@ -146,7 +193,10 @@ const NetworkFYP = ({ username }) => {
     
     if (boundWidth > canvasSize.width * 0.4 || boundHeight > canvasSize.height * 0.4) {
       if (posts.length < allPosts.length) {
-        const newPosts = allPosts.slice(0, Math.min(posts.length + BATCH_SIZE, allPosts.length));
+        const newPosts = allPosts.slice(
+          0,
+          Math.min(posts.length + LOAD_MORE_STEP, allPosts.length)
+        );
         setPosts(newPosts);
       }
     }
@@ -183,6 +233,51 @@ const NetworkFYP = ({ username }) => {
       }
     },
     [username]
+  );
+
+  const handleComment = useCallback(
+    async (text) => {
+      if (!selectedPost) return false;
+      if (!activeUser) {
+        navigate("/login");
+        return false;
+      }
+
+      const postId = String(selectedPost._id || selectedPost.id);
+      try {
+        const response = await fetch(`${BACKEND_URL}/api/posts/${postId}/comment`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username: activeUser, text }),
+        });
+        if (!response.ok) throw new Error(`Comment request failed: ${response.status}`);
+
+        const updatedPost = await response.json();
+        const norm = {
+          ...updatedPost,
+          _id: String(updatedPost._id),
+          artistId: updatedPost.artistId
+            ? String(updatedPost.artistId)
+            : updatedPost.artistId,
+          likes:
+            typeof updatedPost.likes === "number"
+              ? updatedPost.likes
+              : Number(updatedPost.likes) || 0,
+          mlTags: updatedPost.mlTags || {},
+          comments: Array.isArray(updatedPost.comments) ? updatedPost.comments : [],
+        };
+
+        setSelectedPost(norm);
+        setPosts((prev) =>
+          prev.map((p) => (String(p._id || p.id) === postId ? norm : p))
+        );
+        return true;
+      } catch (err) {
+        console.error("Comment failed:", err);
+        return false;
+      }
+    },
+    [selectedPost, activeUser, navigate]
   );
 
   // Handle like
@@ -286,6 +381,43 @@ const NetworkFYP = ({ username }) => {
 
   return (
     <div ref={containerRef} style={styles.container}>
+      <div style={styles.topNav}>
+        <Link to="/" style={styles.navLink}>Home</Link>
+        <Link to="/about" style={styles.navLink}>About</Link>
+        <Link to="/search" style={styles.navLink}>Search</Link>
+        {accountId ? (
+          <>
+            <Link to={profilePath} style={styles.navLink}>Profile</Link>
+            <button
+              style={styles.navBtn}
+              onClick={() => {
+                localStorage.removeItem("accountId");
+                localStorage.removeItem("username");
+                window.dispatchEvent(new Event("accountIdChanged"));
+                navigate("/login");
+              }}
+            >
+              Logout
+            </button>
+          </>
+        ) : (
+          <Link to="/login" style={styles.navLink}>Login</Link>
+        )}
+      </div>
+
+      <div style={styles.searchBar}>
+        <input
+          type="text"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          placeholder="Search posts, tags, or artists..."
+          style={styles.searchInput}
+        />
+        <button style={styles.searchBtn} onClick={() => navigate("/search")}>
+          Search
+        </button>
+      </div>
+
       <NetworkCanvas
         nodes={nodes}
         links={links}
@@ -301,9 +433,10 @@ const NetworkFYP = ({ username }) => {
       {selectedPost && (
         <PostModal
           post={selectedPost}
-          username={username}
+          username={activeUser}
           onClose={() => setSelectedPost(null)}
           onLike={handleLike}
+          onComment={handleComment}
           isLiked={isSelectedLiked}
         />
       )}
@@ -311,7 +444,7 @@ const NetworkFYP = ({ username }) => {
       {/* Status indicators */}
       <div style={styles.statusBar}>
         <div style={styles.statusText}>
-          Nodes: {nodes.length} | Posts: {posts.length} / {allPosts.length}
+          Nodes: {nodes.length} | Visible: {filteredPosts.length} | Posts: {posts.length} / {allPosts.length}
         </div>
         <div style={styles.statusText}>
           Zoom: {(scale * 100).toFixed(0)}%
@@ -323,10 +456,14 @@ const NetworkFYP = ({ username }) => {
 
 const styles = {
   container: {
+    position: "fixed",
+    inset: 0,
     width: "100vw",
     height: "100vh",
-    backgroundColor: "#000",
-    position: "relative",
+    backgroundColor: "#E8E4D9",
+    backgroundImage:
+      "linear-gradient(#D3CDC1 1px, transparent 1px), linear-gradient(90deg, #D3CDC1 1px, transparent 1px)",
+    backgroundSize: "40px 40px",
     overflow: "hidden",
   },
   centerScreen: {
@@ -336,19 +473,22 @@ const styles = {
     flexDirection: "column",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#000",
+    backgroundColor: "#E8E4D9",
+    backgroundImage:
+      "linear-gradient(#D3CDC1 1px, transparent 1px), linear-gradient(90deg, #D3CDC1 1px, transparent 1px)",
+    backgroundSize: "40px 40px",
     gap: "16px",
   },
   spinner: {
     width: "36px",
     height: "36px",
-    border: "3px solid rgba(255,255,255,0.15)",
-    borderTop: "3px solid #a78bfa",
+    border: "3px solid rgba(74,74,74,0.2)",
+    borderTop: "3px solid #A5A58D",
     borderRadius: "50%",
     animation: "spin 0.8s linear infinite",
   },
   loadingText: {
-    color: "rgba(255,255,255,0.5)",
+    color: "#6B705C",
     fontSize: "14px",
     margin: 0,
   },
@@ -358,12 +498,12 @@ const styles = {
     margin: 0,
   },
   emptyText: {
-    color: "rgba(255,255,255,0.5)",
+    color: "#6B705C",
     fontSize: "15px",
     margin: 0,
   },
   retryBtn: {
-    background: "#a78bfa",
+    background: "#A5A58D",
     color: "#fff",
     border: "none",
     borderRadius: "8px",
@@ -379,13 +519,82 @@ const styles = {
     left: "16px",
     display: "flex",
     gap: "24px",
-    backgroundColor: "rgba(0, 0, 0, 0.6)",
+    backgroundColor: "rgba(253, 251, 247, 0.88)",
     backdropFilter: "blur(8px)",
-    border: "1px solid rgba(167, 139, 250, 0.2)",
+    border: "1px solid rgba(165, 165, 141, 0.45)",
     borderRadius: "8px",
     padding: "12px 16px",
     fontSize: "12px",
-    color: "rgba(255, 255, 255, 0.6)",
+    color: "#6B705C",
+  },
+  searchBar: {
+    position: "fixed",
+    top: "64px",
+    left: "50%",
+    transform: "translateX(-50%)",
+    zIndex: 20,
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    padding: "10px",
+    borderRadius: "12px",
+    backgroundColor: "rgba(253, 251, 247, 0.92)",
+    border: "1px solid rgba(165, 165, 141, 0.45)",
+    boxShadow: "0 10px 22px rgba(0,0,0,0.08)",
+  },
+  topNav: {
+    position: "fixed",
+    top: "12px",
+    left: "50%",
+    transform: "translateX(-50%)",
+    zIndex: 21,
+    display: "flex",
+    alignItems: "center",
+    gap: "10px",
+    padding: "10px 12px",
+    borderRadius: "12px",
+    backgroundColor: "rgba(253, 251, 247, 0.92)",
+    border: "1px solid rgba(165, 165, 141, 0.45)",
+    boxShadow: "0 10px 22px rgba(0,0,0,0.08)",
+  },
+  navLink: {
+    textDecoration: "none",
+    color: "#4A4A4A",
+    fontSize: "13px",
+    fontWeight: 700,
+    padding: "6px 10px",
+    borderRadius: "8px",
+    background: "rgba(232, 228, 217, 0.65)",
+    border: "1px solid rgba(165, 165, 141, 0.4)",
+  },
+  navBtn: {
+    color: "#4A4A4A",
+    fontSize: "13px",
+    fontWeight: 700,
+    padding: "6px 10px",
+    borderRadius: "8px",
+    background: "rgba(232, 228, 217, 0.65)",
+    border: "1px solid rgba(165, 165, 141, 0.4)",
+    cursor: "pointer",
+  },
+  searchInput: {
+    width: "min(460px, 62vw)",
+    padding: "10px 12px",
+    borderRadius: "8px",
+    border: "1px solid rgba(165, 165, 141, 0.55)",
+    backgroundColor: "#fff",
+    color: "#4A4A4A",
+    fontSize: "14px",
+    outline: "none",
+  },
+  searchBtn: {
+    padding: "10px 14px",
+    borderRadius: "8px",
+    border: "none",
+    background: "#A5A58D",
+    color: "#fff",
+    fontWeight: "600",
+    cursor: "pointer",
   },
   statusText: {
     margin: 0,
