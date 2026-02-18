@@ -1,14 +1,19 @@
 import React, { useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import ReCAPTCHA from "react-google-recaptcha";
 import "./App.css";
 
+const API_BASE = import.meta.env.VITE_BACKEND_URL || "http://localhost:3001";
+
 export default function SignUpPage() {
+  const navigate = useNavigate();
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [captchaToken, setCaptchaToken] = useState(null);
+
+  const siteKey = import.meta.env.VITE_RECAPTCHA_SITE_KEY;
 
   const onCaptchaChange = (token) => {
     setCaptchaToken(token);
@@ -17,13 +22,13 @@ export default function SignUpPage() {
   const handleSignUp = async (e) => {
     if (e) e.preventDefault();
 
-    if (!captchaToken) {
+    if (siteKey && !captchaToken) {
       alert("Please check the box to verify you are not a robot!");
       return;
     }
 
-    if (!username || !email || !password || !confirmPassword) {
-      alert("Please fill in all fields.");
+    if (!username || !password || !confirmPassword) {
+      alert("Please fill in username and password fields.");
       return;
     }
 
@@ -32,30 +37,26 @@ export default function SignUpPage() {
       return;
     }
 
-    console.log("Sending data to backend:", { username, email, password, captchaToken });
-
     try {
-      const response = await fetch('http://localhost:5000/signup', {
-        method: 'POST',
+      const response = await fetch(`${API_BASE}/api/auth/register`, {
+        method: "POST",
         headers: {
-          'Content-Type': 'application/json',
+          "Content-Type": "application/json",
         },
         body: JSON.stringify({
           username,
           email,
           password,
-          captchaToken,
         }),
       });
 
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
 
       if (response.ok) {
-        alert("Sign Up Successful!");
-        // Redirect to login or home
-        // window.location.href = "/login";
+        alert("Sign Up Successful! Please login.");
+        navigate("/login");
       } else {
-        alert("Sign Up Failed: " + data.message);
+        alert("Sign Up Failed: " + (data.error || data.message || "Unknown error"));
       }
     } catch (error) {
       console.error("Error:", error);
@@ -100,7 +101,7 @@ export default function SignUpPage() {
         <div style={{ height: 14 }} />
 
         <label style={{ display: "block", fontSize: 12, color: "#666", marginBottom: 6 }}>
-          Email
+          Email (optional)
         </label>
         <input
           type="email"
@@ -136,12 +137,11 @@ export default function SignUpPage() {
           onChange={(e) => setConfirmPassword(e.target.value)}
         />
 
-        <div style={{ marginTop: 20, display: 'flex', justifyContent: 'center' }}>
-          <ReCAPTCHA
-            sitekey={import.meta.env.VITE_RECAPTCHA_SITE_KEY}
-            onChange={onCaptchaChange}
-          />
-        </div>
+        {siteKey && (
+          <div style={{ marginTop: 20, display: "flex", justifyContent: "center" }}>
+            <ReCAPTCHA sitekey={siteKey} onChange={onCaptchaChange} />
+          </div>
+        )}
 
         <button
           onClick={handleSignUp}

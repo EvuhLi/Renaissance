@@ -14,6 +14,9 @@ const NAV_HEIGHT = 56; // keep content from hiding under fixed nav
 
 function App() {
   const [open, setOpen] = useState(false);
+  const storedAccountId =
+    typeof window !== "undefined" ? localStorage.getItem("accountId") : null;
+  const profilePath = storedAccountId ? "/profile/" + encodeURIComponent(storedAccountId) : "/profile";
 
   return (
     <BrowserRouter>
@@ -88,7 +91,7 @@ function App() {
               <MenuItem to="/" label="Home" onPick={() => setOpen(false)} />
               <MenuItem to="/about" label="About" onPick={() => setOpen(false)} />
               <MenuItem to="/login" label="Login" onPick={() => setOpen(false)} />
-              <MenuItem to="/profile" label="Profile" onPick={() => setOpen(false)} />
+              <MenuItem to={profilePath} label="Profile" onPick={() => setOpen(false)} />
               <MenuItem to="/fyp" label="For You" onPick={() => setOpen(false)} />
             </div>
           )}

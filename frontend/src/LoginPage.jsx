@@ -1,9 +1,12 @@
 import React, { useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import ReCAPTCHA from "react-google-recaptcha";
 import "./App.css";
 
+const API_BASE = import.meta.env.VITE_BACKEND_URL || "http://localhost:3001";
+
 export default function LoginPage() {
+  const navigate = useNavigate();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [captchaToken, setCaptchaToken] = useState(null);
@@ -17,39 +20,33 @@ export default function LoginPage() {
   const handleLogin = async (e) => {
     if (e) e.preventDefault();
 
-    // 0) Make sure we have a site key
-    if (!siteKey) {
-      alert("Missing reCAPTCHA site key. Add VITE_RECAPTCHA_SITE_KEY to frontend/.env and restart.");
-      return;
-    }
-
-    // A) Check captcha
-    if (!captchaToken) {
+    if (siteKey && !captchaToken) {
       alert("Please check the box to verify you are not a robot!");
       return;
     }
 
-    // B) Check fields
     if (!username || !password) {
       alert("Please enter both username and password.");
       return;
     }
 
     try {
-      const response = await fetch("http://localhost:5000/login", {
+      const response = await fetch(`${API_BASE}/api/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, password, captchaToken }),
+        body: JSON.stringify({ username, password }),
       });
 
       const data = await response.json().catch(() => ({}));
 
-      if (response.ok) {
+      if (response.ok && data.user) {
+        localStorage.setItem("username", data.user.username);
+        localStorage.setItem("accountId", data.user.id || "");
         alert("Login Successful!");
-        // Optional redirect:
-        // window.location.href = "/";
+        const targetProfileId = data.user.id || localStorage.getItem("accountId");
+        navigate(targetProfileId ? "/profile/" + encodeURIComponent(targetProfileId) : "/profile");
       } else {
-        alert("Login Failed: " + (data.message || "Unknown error"));
+        alert("Login Failed: " + (data.error || data.message || "Unknown error"));
       }
     } catch (error) {
       console.error("Error:", error);
@@ -81,7 +78,6 @@ export default function LoginPage() {
       >
         <h2 style={{ textAlign: "center", margin: "0 0 20px" }}>Login</h2>
 
-        {/* USERNAME */}
         <label style={{ display: "block", fontSize: 12, color: "#666", marginBottom: 6 }}>
           Username
         </label>
@@ -94,7 +90,6 @@ export default function LoginPage() {
 
         <div style={{ height: 14 }} />
 
-        {/* PASSWORD */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
           <label style={{ fontSize: 12, color: "#666" }}>Password</label>
           <a href="#" onClick={(e) => e.preventDefault()} style={{ fontSize: 12, color: "#7c3aed" }}>
@@ -109,29 +104,12 @@ export default function LoginPage() {
           onChange={(e) => setPassword(e.target.value)}
         />
 
-        {/* CAPTCHA */}
-        <div style={{ marginTop: 20, display: "flex", justifyContent: "center" }}>
-          {siteKey ? (
+        {siteKey && (
+          <div style={{ marginTop: 20, display: "flex", justifyContent: "center" }}>
             <ReCAPTCHA sitekey={siteKey} onChange={onCaptchaChange} />
-          ) : (
-            <div
-              style={{
-                fontSize: 12,
-                color: "#b91c1c",
-                background: "rgba(185, 28, 28, 0.08)",
-                border: "1px solid rgba(185, 28, 28, 0.25)",
-                padding: "10px 12px",
-                borderRadius: 10,
-                textAlign: "center",
-              }}
-            >
-              Missing <b>VITE_RECAPTCHA_SITE_KEY</b>. Create <code>frontend/.env</code> and restart
-              <code> npm run dev</code>.
-            </div>
-          )}
-        </div>
+          </div>
+        )}
 
-        {/* LOGIN BUTTON */}
         <button
           onClick={handleLogin}
           style={{
@@ -160,16 +138,6 @@ export default function LoginPage() {
           </Link>
         </div>
 
-        <div style={{ textAlign: "center", marginTop: 18, color: "#777", fontSize: 12 }}>
-          Or Sign Up Using
-        </div>
-
-        <div style={{ display: "flex", justifyContent: "center", gap: 12, marginTop: 10 }}>
-          <SocialCircle label="f" />
-          <SocialCircle label="🐦" />
-          <SocialCircle label="G" />
-        </div>
-
         <div style={{ textAlign: "center", marginTop: 22, color: "#777", fontSize: 12 }}>
           Or go back
         </div>
@@ -192,26 +160,3 @@ const inputStyle = {
   outline: "none",
   fontSize: 14,
 };
-
-function SocialCircle({ label }) {
-  return (
-    <button
-      onClick={(e) => e.preventDefault()}
-      style={{
-        width: 36,
-        height: 36,
-        borderRadius: "999px",
-        border: "1px solid rgba(0,0,0,0.12)",
-        background: "white",
-        cursor: "pointer",
-        display: "grid",
-        placeItems: "center",
-        fontWeight: 800,
-      }}
-      aria-label={`Continue with ${label}`}
-      title={`Continue with ${label}`}
-    >
-      {label}
-    </button>
-  );
-}

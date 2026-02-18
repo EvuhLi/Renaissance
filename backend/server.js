@@ -5,6 +5,7 @@ const cors = require("cors");
 const mongoose = require("mongoose");
 const nodeFetch = require("node-fetch");
 const FormData = require("form-data");
+const crypto = require("crypto");
 
 const Post = require("./models/Post");
 const Account = require("./models/Account");
@@ -14,6 +15,27 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
+
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString("hex");
+  const derived = crypto.scryptSync(password, salt, 64).toString("hex");
+  return `${salt}:${derived}`;
+}
+
+function verifyPassword(password, storedHash) {
+  if (!storedHash || !storedHash.includes(":")) return false;
+
+  const [salt, keyHex] = storedHash.split(":");
+  const derivedKey = crypto.scryptSync(password, salt, 64);
+  const keyBuffer = Buffer.from(keyHex, "hex");
+
+  if (derivedKey.length !== keyBuffer.length) return false;
+  return crypto.timingSafeEqual(derivedKey, keyBuffer);
+}
+
+function escapeRegex(text = "") {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 // =============================
 // ENV
@@ -157,13 +179,11 @@ app.get("/api/fyp", async (req, res) => {
     if (username && username !== "undefined" && username !== "null") {
       query = {
         user: { $ne: username },
-        likedBy: { $ne: username }
+        likedBy: { $ne: username },
       };
     }
 
-    const posts = await Post.find(query)
-      .sort({ date: -1 })
-      .lean();
+    const posts = await Post.find(query).sort({ date: -1 }).lean();
 
     if (!posts.length) return res.json([]);
 
@@ -245,16 +265,7 @@ app.get("/api/posts", async (req, res) => {
 
 app.post("/api/posts", async (req, res) => {
   try {
-    const {
-      user,
-      artistId,
-      url,
-      title,
-      description,
-      tags,
-      mlTags,
-      medium,
-    } = req.body;
+    const { user, artistId, url, title, description, tags, mlTags, medium } = req.body;
 
     if (!user || !url)
       return res.status(400).json({ error: "user and url required" });
@@ -279,7 +290,7 @@ app.post("/api/posts", async (req, res) => {
       tags: Array.isArray(tags) ? tags : [],
       mlTags: mlTags || {},
       medium,
-      likedBy: []
+      likedBy: [],
     });
 
     res.status(201).json(newPost);
@@ -300,20 +311,107 @@ app.patch("/api/posts/:id/like", async (req, res) => {
 
     const updatedPost = await Post.findByIdAndUpdate(
       id,
-      { 
+      {
         $inc: { likes: 1 },
-        $addToSet: { likedBy: username }
+        $addToSet: { likedBy: username },
       },
       { new: true }
     );
 
-    if (!updatedPost)
-      return res.status(404).json({ error: "Post not found" });
+    if (!updatedPost) return res.status(404).json({ error: "Post not found" });
 
     res.json(updatedPost);
   } catch (err) {
     console.error("Like Error:", err);
     res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+// =============================
+// AUTH
+// =============================
+
+app.post("/api/auth/register", async (req, res) => {
+  try {
+    const usernameRaw = (req.body.username || "").trim();
+    const emailRaw = (req.body.email || "").trim().toLowerCase();
+    const password = req.body.password || "";
+
+    if (!usernameRaw || !password) {
+      return res.status(400).json({ error: "Username and password are required" });
+    }
+
+    if (password.length < 6) {
+      return res.status(400).json({ error: "Password must be at least 6 characters" });
+    }
+
+    const usernameRegex = new RegExp(`^${escapeRegex(usernameRaw)}$`, "i");
+
+    const existingUsername = await Account.findOne({ username: usernameRegex });
+    if (existingUsername) {
+      return res.status(409).json({ error: "Username is taken, choose another" });
+    }
+
+    if (emailRaw) {
+      const existingEmail = await Account.findOne({ email: emailRaw });
+      if (existingEmail) {
+        return res.status(409).json({ error: "Email already registered" });
+      }
+    }
+
+    const newAccount = await Account.create({
+      username: usernameRaw,
+      email: emailRaw || undefined,
+      passwordHash: hashPassword(password),
+      bio: "",
+      followersCount: 0,
+      following: [],
+    });
+
+    return res.status(201).json({
+      message: "Sign up successful",
+      user: {
+        id: newAccount._id,
+        username: newAccount.username,
+        email: newAccount.email || null,
+      },
+    });
+  } catch (err) {
+    console.error("Register Error:", err);
+    return res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+app.post("/api/auth/login", async (req, res) => {
+  try {
+    const usernameRaw = (req.body.username || "").trim();
+    const password = req.body.password || "";
+
+    if (!usernameRaw || !password) {
+      return res.status(400).json({ error: "Username and password are required" });
+    }
+
+    const usernameRegex = new RegExp(`^${escapeRegex(usernameRaw)}$`, "i");
+
+    const account = await Account.findOne({
+      $or: [{ username: usernameRegex }, { email: usernameRaw.toLowerCase() }],
+    });
+
+    if (!account || !verifyPassword(password, account.passwordHash)) {
+      return res.status(401).json({ error: "Invalid username or password" });
+    }
+
+    return res.json({
+      message: "Login successful",
+      user: {
+        id: account._id,
+        username: account.username,
+        email: account.email || null,
+      },
+    });
+  } catch (err) {
+    console.error("Login Error:", err);
+    return res.status(500).json({ error: "Internal Server Error" });
   }
 });
 
@@ -347,7 +445,6 @@ app.post("/api/accounts", async (req, res) => {
       return res.status(400).json({ error: "Username required" });
     }
 
-    // Check if username already exists
     const existing = await Account.findOne({ username: username.trim() });
     if (existing) {
       return res.status(400).json({ error: "Username already exists" });
@@ -366,7 +463,6 @@ app.post("/api/accounts", async (req, res) => {
     res.status(500).json({ error: "Internal Server Error" });
   }
 });
-
 
 // =============================
 // START SERVER

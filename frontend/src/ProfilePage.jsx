@@ -109,6 +109,9 @@ const mergeManualTags = (mlTagsRaw, userTagsArray) => {
 const ProfilePage = () => {
   const { artistId } = useParams();
   const resolvedArtistId = (artistId || "").match(/[a-f0-9]{24}/i)?.[0];
+  const storedAccountId =
+    typeof window !== "undefined" ? (localStorage.getItem("accountId") || "").match(/[a-f0-9]{24}/i)?.[0] : undefined;
+  const activeArtistId = resolvedArtistId || storedAccountId;
   const fileInputRef = useRef(null);
   const [isProtected, setIsProtected] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
@@ -207,7 +210,7 @@ const ProfilePage = () => {
     );
     const postUsername =
       typeof post.user === "object" ? post.user.username : post.user;
-    if (resolvedArtistId) return String(postArtistId) === String(resolvedArtistId);
+    if (activeArtistId) return String(postArtistId) === String(activeArtistId);
     if (currentUserId && postArtistId) return String(postArtistId) === String(currentUserId);
     if (currentUser?.username) return postUsername === currentUser.username;
     return true;
@@ -219,8 +222,8 @@ const ProfilePage = () => {
 
     const loadAccount = async () => {
       try {
-        const accountUrl = resolvedArtistId
-          ? `${BACKEND_URL}/api/accounts/id/${encodeURIComponent(resolvedArtistId)}`
+        const accountUrl = activeArtistId
+          ? `${BACKEND_URL}/api/accounts/id/${encodeURIComponent(activeArtistId)}`
           : `${BACKEND_URL}/api/accounts/${encodeURIComponent(defaultUser.username)}`;
         const response = await fetch(accountUrl);
         if (!response.ok) throw new Error("Failed to load account");
@@ -245,7 +248,7 @@ const ProfilePage = () => {
 
     loadAccount();
     loadPosts();
-  }, [artistId, resolvedArtistId]);
+  }, [artistId, resolvedArtistId, activeArtistId]);
 
   useEffect(() => {
     const handleKeyDown = (e) => {
@@ -466,7 +469,7 @@ const ProfilePage = () => {
         <div style={styles.statsContainer}>
           <div style={styles.usernameRow}>
             <h2 style={styles.username}>
-              {resolvedArtistId && !user && !profileError
+              {activeArtistId && !user && !profileError
                 ? "Loading..."
                 : (user && user.username) || defaultUser.username}
             </h2>
