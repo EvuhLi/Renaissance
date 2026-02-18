@@ -347,7 +347,7 @@ const ProfilePage = () => {
         {`
             @import url('https://fonts.googleapis.com/css2?family=Caveat:wght@400;700&family=Playfair+Display:ital,wght@0,400;0,600;1,400&family=Lato:wght@300;400;700&display=swap');
 
-            .gallery-wrapper > div {
+            .gallery-wrapper > .post-grid {
                 display: grid !important;
                 grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
                 gap: 40px;
