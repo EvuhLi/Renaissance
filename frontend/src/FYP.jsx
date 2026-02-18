@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { useArtProtection } from "./hooks/useArtProtection";
 
 const BACKEND_URL = "http://localhost:3001";
 // If true, liking requires an authenticated username and will redirect to /login
@@ -14,7 +13,7 @@ const SerendipityBadge = () => (
 );
 
 // ─── Single full-screen post card ────────────────────────────────────────────
-const FYPCard = ({ post, username, onLike, likedPosts, isProtected }) => {
+const FYPCard = ({ post, username, onLike, likedPosts }) => {
   const navigate = useNavigate();
   const postId = String(post._id || post.id);
   const isLiked = !!likedPosts[postId];
@@ -30,12 +29,8 @@ const FYPCard = ({ post, username, onLike, likedPosts, isProtected }) => {
       <img
         src={post.url}
         alt={post.title || "Artwork"}
-        style={{
-          ...styles.cardImage,
-          filter: isProtected ? "blur(26px)" : "none",
-        }}
+        style={styles.cardImage}
         draggable={false}
-        onContextMenu={(e) => e.preventDefault()}
       />
 
       {/* Gradient overlay */}
@@ -80,7 +75,6 @@ const FYPCard = ({ post, username, onLike, likedPosts, isProtected }) => {
 
 // ─── Main FYP component ──────────────────────────────────────────────────────
 const FYP = ({ username }) => {
-  const { isProtected } = useArtProtection();
   const [posts, setPosts] = useState([]);
   const [likedPosts, setLikedPosts] = useState({});
   const [loading, setLoading] = useState(true);
@@ -291,7 +285,6 @@ const FYP = ({ username }) => {
       style={styles.container}
       onTouchStart={onTouchStart}
       onTouchEnd={onTouchEnd}
-      onContextMenu={(e) => e.preventDefault()}
     >
       {posts.map((post, idx) => (
         <div key={post._id || post.id || idx} style={styles.slide}>
@@ -300,12 +293,9 @@ const FYP = ({ username }) => {
             username={username}
             onLike={handleLike}
             likedPosts={likedPosts}
-            isProtected={isProtected}
           />
         </div>
       ))}
-
-      {isProtected && <div style={styles.protectionOverlay}>Protected View Active</div>}
 
       {/* Progress dots */}
       <div style={styles.dotsContainer}>
@@ -525,21 +515,6 @@ const styles = {
     fontWeight: "600",
     cursor: "pointer",
     fontFamily: "inherit",
-  },
-  protectionOverlay: {
-    position: "fixed",
-    inset: 0,
-    zIndex: 999,
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    color: "rgba(255,255,255,0.9)",
-    backgroundColor: "rgba(0,0,0,0.25)",
-    backdropFilter: "blur(8px)",
-    pointerEvents: "none",
-    fontSize: "14px",
-    fontWeight: "600",
-    letterSpacing: "0.03em",
   },
 };
 

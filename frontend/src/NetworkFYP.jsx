@@ -1,289 +1,91 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import React, { useState, useEffect, useRef, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import { useForceSimulation } from "./hooks/useForceSimulation";
-import { useArtProtection } from "./hooks/useArtProtection";
 import NetworkCanvas from "./components/NetworkCanvas";
 import PostModal from "./components/PostModal";
 
 const BACKEND_URL = "http://localhost:3001";
-const INITIAL_VISIBLE_NODES = 28;
-const FETCH_LIMIT = 80;
-const LOAD_MORE_STEP = 16;
-const CATEGORY_THRESHOLDS = {
-  medium: 0.12,
-  subject: 0.1,
-  style: 0.1,
-  mood: 0.12,
-  color_palette: 0.12,
-  aesthetic_features: 0.12,
-  manual: 0.08,
-};
-const LINK_COLORS = {
-  medium: "#6B705C",
-  subject: "#CB997E",
-  style: "#A5A58D",
-  mood: "#B08968",
-  color_palette: "#7F5539",
-  aesthetic_features: "#84A98C",
-  manual: "#52796F",
-  tag_overlap: "#2F3E46",
-  follower: "#B56576",
-};
+const BATCH_SIZE = 12;
 
 const NetworkFYP = ({ username }) => {
-  const { isProtected } = useArtProtection();
   const [posts, setPosts] = useState([]);
   const [allPosts, setAllPosts] = useState([]); // All posts ever loaded
-  const [searchQuery, setSearchQuery] = useState("");
   const [likedPosts, setLikedPosts] = useState({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [followingSet, setFollowingSet] = useState(new Set());
-  const [linkFilters, setLinkFilters] = useState({
-    medium: true,
-    subject: true,
-    style: true,
-    mood: true,
-    color_palette: true,
-    aesthetic_features: true,
-    manual: true,
-    tag_overlap: true,
-    follower: true,
-  });
   
   const [selectedPost, setSelectedPost] = useState(null);
   const [scale, setScale] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
-  const [canvasSize, setCanvasSize] = useState({
-    width: window.innerWidth,
-    height: window.innerHeight,
-  });
+  const [canvasSize, setCanvasSize] = useState({ width: window.innerWidth, height: window.innerHeight });
   
   const containerRef = useRef(null);
   const navigate = useNavigate();
-  const activeUser = username || localStorage.getItem("username") || "";
-  const accountId = localStorage.getItem("accountId") || "";
-  const profilePath = accountId ? `/profile/${encodeURIComponent(accountId)}` : "/profile";
 
+  // Update canvas size on window resize
   useEffect(() => {
-    const loadFollowing = async () => {
-      if (!accountId) {
-        setFollowingSet(new Set());
-        return;
-      }
-      try {
-        const res = await fetch(`${BACKEND_URL}/api/accounts/id/${encodeURIComponent(accountId)}`);
-        if (!res.ok) return;
-        const account = await res.json();
-        const ids = new Set((account?.following || []).map((id) => String(id)));
-        setFollowingSet(ids);
-      } catch (e) {
-        console.warn("Failed to load following set:", e);
-      }
+    const handleResize = () => {
+      setCanvasSize({ width: window.innerWidth, height: window.innerHeight });
     };
-    loadFollowing();
-  }, [accountId]);
-
-  // Keep canvas in sync with actual container dimensions.
-  useEffect(() => {
-    const updateFromContainer = () => {
-      const el = containerRef.current;
-      if (!el) return;
-      const rect = el.getBoundingClientRect();
-      setCanvasSize({
-        width: Math.max(1, Math.floor(rect.width)),
-        height: Math.max(1, Math.floor(rect.height)),
-      });
-    };
-
-    updateFromContainer();
-    const observer = new ResizeObserver(updateFromContainer);
-    if (containerRef.current) observer.observe(containerRef.current);
-    window.addEventListener("resize", updateFromContainer);
-    return () => {
-      observer.disconnect();
-      window.removeEventListener("resize", updateFromContainer);
-    };
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
   }, []);
 
-  const filteredPosts = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
-    if (!q) return posts;
-    return posts.filter((post) => {
-      const user = String(post.user || "").toLowerCase();
-      const title = String(post.title || "").toLowerCase();
-      const description = String(post.description || "").toLowerCase();
-      const tags = Array.isArray(post.tags)
-        ? post.tags.map((t) => String(t || "").toLowerCase()).join(" ")
-        : "";
-      const mlTags = post?.mlTags && typeof post.mlTags === "object"
-        ? Object.values(post.mlTags)
-            .flat()
-            .map((t) => String(t?.label || "").toLowerCase())
-            .join(" ")
-        : "";
-      return (
-        user.includes(q) ||
-        title.includes(q) ||
-        description.includes(q) ||
-        tags.includes(q) ||
-        mlTags.includes(q)
-      );
-    });
-  }, [posts, searchQuery]);
-
   // Force simulation hook - use actual canvas size
-  const { nodes } = useForceSimulation(filteredPosts, canvasSize.width, canvasSize.height);
+  const { nodes, simulation } = useForceSimulation(posts, canvasSize.width, canvasSize.height);
 
-  const links = useMemo(() => {
+  // Build links from posts for canvas rendering
+  const buildLinks = useCallback(() => {
     if (!nodes.length) return [];
-
-    const similarity = (labelsA, labelsB) => {
-      if (!labelsA.size || !labelsB.size) return 0;
-      const intersection = new Set([...labelsA].filter((x) => labelsB.has(x)));
-      const union = new Set([...labelsA, ...labelsB]);
-      return union.size ? intersection.size / union.size : 0;
-    };
-
-    const labelsFor = (post, category) => {
-      const labels = new Set();
-      const pushTokens = (value) => {
-        const raw = String(value || "").trim().toLowerCase();
-        if (!raw) return;
-        labels.add(raw);
-        raw
-          .split(/[\s/_-]+/)
-          .map((t) => t.trim())
-          .filter((t) => t.length >= 3)
-          .forEach((t) => labels.add(t));
-      };
-      if (category === "medium") {
-        const mediumLabel = String(post?.medium || "").trim().toLowerCase();
-        if (mediumLabel) pushTokens(mediumLabel);
-      }
-      if (category === "manual" && Array.isArray(post?.tags)) {
-        post.tags.forEach((tag) => pushTokens(tag));
-      }
-      if (post?.mlTags && Array.isArray(post.mlTags[category])) {
-        post.mlTags[category].forEach((tag) => {
-          pushTokens(tag?.label);
-        });
-      }
-      return labels;
-    };
-
-    const overallLabelsFor = (post) => {
-      const labels = new Set();
-      Object.keys(CATEGORY_THRESHOLDS).forEach((category) => {
-        labelsFor(post, category).forEach((label) => labels.add(label));
-      });
-      return labels;
-    };
-
-    const perCategoryLabels = {};
-    Object.keys(CATEGORY_THRESHOLDS).forEach((category) => {
-      perCategoryLabels[category] = nodes.map((n) => labelsFor(n.post, category));
-    });
-    const overallLabels = nodes.map((n) => overallLabelsFor(n.post));
-
-    const built = [];
-    const tagDegree = new Array(nodes.length).fill(0);
-    const bestTagCandidate = new Array(nodes.length).fill(null);
-
-    for (let i = 0; i < nodes.length; i++) {
-      for (let j = i + 1; j < nodes.length; j++) {
-        let hasTagLink = false;
-        Object.entries(CATEGORY_THRESHOLDS).forEach(([category, threshold]) => {
-          const score = similarity(
-            perCategoryLabels[category][i],
-            perCategoryLabels[category][j]
-          );
-          if (score >= threshold) {
-            built.push({
-              source: nodes[i],
-              target: nodes[j],
-              strength: score,
-              type: category,
+    
+    const TAG_SIMILARITY_THRESHOLD = 0.4;
+    
+    const calculateTagSimilarity = (tagsA, tagsB) => {
+      if (!tagsA || !tagsB) return 0;
+      const extractLabels = (tags) => {
+        if (!tags || typeof tags !== "object") return new Set();
+        const labels = new Set();
+        Object.values(tags).forEach((tagList) => {
+          if (Array.isArray(tagList)) {
+            tagList.forEach((tag) => {
+              if (tag && tag.label) labels.add(tag.label);
             });
-            hasTagLink = true;
           }
         });
-        if (hasTagLink) {
-          tagDegree[i] += 1;
-          tagDegree[j] += 1;
-        }
+        return labels;
+      };
+      const labelsA = extractLabels(tagsA);
+      const labelsB = extractLabels(tagsB);
+      if (labelsA.size === 0 || labelsB.size === 0) return 0;
+      const intersection = new Set([...labelsA].filter((x) => labelsB.has(x)));
+      const union = new Set([...labelsA, ...labelsB]);
+      return intersection.size / union.size;
+    };
 
-        const overallScore = similarity(overallLabels[i], overallLabels[j]);
-        if (!bestTagCandidate[i] || overallScore > bestTagCandidate[i].score) {
-          bestTagCandidate[i] = { j, score: overallScore };
-        }
-        if (!bestTagCandidate[j] || overallScore > bestTagCandidate[j].score) {
-          bestTagCandidate[j] = { j: i, score: overallScore };
-        }
-
-        const aArtistId = String(nodes[i]?.post?.artistId || "");
-        const bArtistId = String(nodes[j]?.post?.artistId || "");
-        if (
-          aArtistId &&
-          bArtistId &&
-          aArtistId !== bArtistId &&
-          followingSet.has(aArtistId) &&
-          followingSet.has(bArtistId)
-        ) {
-          built.push({
+    const links = [];
+    for (let i = 0; i < posts.length; i++) {
+      for (let j = i + 1; j < posts.length; j++) {
+        const similarity = calculateTagSimilarity(posts[i].mlTags, posts[j].mlTags);
+        if (similarity > TAG_SIMILARITY_THRESHOLD) {
+          links.push({
             source: nodes[i],
             target: nodes[j],
-            strength: 0.75,
-            type: "follower",
+            strength: similarity,
           });
         }
       }
     }
+    return links;
+  }, [posts, nodes]);
 
-    // Guarantee at least one tag-based connection for each node (if possible).
-    const seenPairs = new Set(
-      built
-        .filter((l) => l.type !== "follower")
-        .map((l) => {
-          const a = String(l.source?.id || "");
-          const b = String(l.target?.id || "");
-          return a < b ? `${a}|${b}` : `${b}|${a}`;
-        })
-    );
-    for (let i = 0; i < nodes.length; i++) {
-      if (nodes.length < 2) break;
-      if (tagDegree[i] > 0) continue;
-      const candidate = bestTagCandidate[i];
-      if (!candidate || candidate.score <= 0) continue;
-      const j = candidate.j;
-      const a = String(nodes[i]?.id || "");
-      const b = String(nodes[j]?.id || "");
-      const key = a < b ? `${a}|${b}` : `${b}|${a}`;
-      if (seenPairs.has(key)) continue;
-      built.push({
-        source: nodes[i],
-        target: nodes[j],
-        strength: Math.max(0.08, candidate.score),
-        type: "tag_overlap",
-      });
-      seenPairs.add(key);
-      tagDegree[i] += 1;
-      tagDegree[j] += 1;
-    }
-
-    return built;
-  }, [nodes, followingSet]);
-
-  const visibleLinks = useMemo(
-    () => links.filter((l) => linkFilters[l.type] !== false),
-    [links, linkFilters]
-  );
+  const links = buildLinks();
 
   // Fetch initial batch of posts
-  const fetchPostsBatch = useCallback(async (limit = FETCH_LIMIT) => {
+  const fetchPostsBatch = useCallback(async (limit = BATCH_SIZE) => {
     setLoading(true);
     setError("");
     try {
+      const activeUser = username || localStorage.getItem("username");
       const params = new URLSearchParams({ limit });
       if (activeUser && activeUser !== "null" && activeUser !== "undefined") {
         params.set("username", activeUser);
@@ -294,7 +96,7 @@ const NetworkFYP = ({ username }) => {
 
       const data = await res.json();
       setAllPosts(data);
-      setPosts(data.slice(0, INITIAL_VISIBLE_NODES));
+      setPosts(data.slice(0, BATCH_SIZE));
       
       // Mark liked posts
       const liked = {};
@@ -311,12 +113,22 @@ const NetworkFYP = ({ username }) => {
     } finally {
       setLoading(false);
     }
-  }, [activeUser]);
+  }, [username]);
 
   // Initial fetch
   useEffect(() => {
     fetchPostsBatch();
   }, [fetchPostsBatch]);
+
+  useEffect(() => {
+    console.log("NetworkFYP state:", {
+      postsLoaded: posts.length,
+      nodesGenerated: nodes.length,
+      allPostsCount: allPosts.length,
+      loading,
+      error,
+    });
+  }, [posts, nodes, allPosts, loading, error]);
 
   // Detect when user pans to edge and load more posts
   const checkBoundsAndLoadMore = useCallback(() => {
@@ -334,10 +146,7 @@ const NetworkFYP = ({ username }) => {
     
     if (boundWidth > canvasSize.width * 0.4 || boundHeight > canvasSize.height * 0.4) {
       if (posts.length < allPosts.length) {
-        const newPosts = allPosts.slice(
-          0,
-          Math.min(posts.length + LOAD_MORE_STEP, allPosts.length)
-        );
+        const newPosts = allPosts.slice(0, Math.min(posts.length + BATCH_SIZE, allPosts.length));
         setPosts(newPosts);
       }
     }
@@ -374,51 +183,6 @@ const NetworkFYP = ({ username }) => {
       }
     },
     [username]
-  );
-
-  const handleComment = useCallback(
-    async (text) => {
-      if (!selectedPost) return false;
-      if (!activeUser) {
-        navigate("/login");
-        return false;
-      }
-
-      const postId = String(selectedPost._id || selectedPost.id);
-      try {
-        const response = await fetch(`${BACKEND_URL}/api/posts/${postId}/comment`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ username: activeUser, text }),
-        });
-        if (!response.ok) throw new Error(`Comment request failed: ${response.status}`);
-
-        const updatedPost = await response.json();
-        const norm = {
-          ...updatedPost,
-          _id: String(updatedPost._id),
-          artistId: updatedPost.artistId
-            ? String(updatedPost.artistId)
-            : updatedPost.artistId,
-          likes:
-            typeof updatedPost.likes === "number"
-              ? updatedPost.likes
-              : Number(updatedPost.likes) || 0,
-          mlTags: updatedPost.mlTags || {},
-          comments: Array.isArray(updatedPost.comments) ? updatedPost.comments : [],
-        };
-
-        setSelectedPost(norm);
-        setPosts((prev) =>
-          prev.map((p) => (String(p._id || p.id) === postId ? norm : p))
-        );
-        return true;
-      } catch (err) {
-        console.error("Comment failed:", err);
-        return false;
-      }
-    },
-    [selectedPost, activeUser, navigate]
   );
 
   // Handle like
@@ -521,100 +285,37 @@ const NetworkFYP = ({ username }) => {
   const isSelectedLiked = postId ? likedPosts[postId] : false;
 
   return (
-    <div ref={containerRef} style={styles.container} onContextMenu={(e) => e.preventDefault()}>
-      <div style={styles.topNav}>
-        <Link to="/" style={styles.navLink}>Home</Link>
-        <Link to="/about" style={styles.navLink}>About</Link>
-        <Link to="/search" style={styles.navLink}>Search</Link>
-        {accountId ? (
-          <>
-            <Link to={profilePath} style={styles.navLink}>Profile</Link>
-            <button
-              style={styles.navBtn}
-              onClick={() => {
-                localStorage.removeItem("accountId");
-                localStorage.removeItem("username");
-                localStorage.removeItem("role");
-                localStorage.removeItem("adminToken");
-                window.dispatchEvent(new Event("accountIdChanged"));
-                navigate("/login");
-              }}
-            >
-              Logout
-            </button>
-          </>
-        ) : (
-          <Link to="/login" style={styles.navLink}>Login</Link>
-        )}
-      </div>
-
-      <div style={styles.searchBar}>
-        <input
-          type="text"
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder="Search posts, tags, or artists..."
-          style={styles.searchInput}
-        />
-        <button style={styles.searchBtn} onClick={() => navigate("/search")}>
-          Search
-        </button>
-      </div>
-
-      <div style={{ ...styles.canvasWrap, filter: isProtected ? "blur(24px)" : "none" }}>
-        <NetworkCanvas
-          nodes={nodes}
-          links={visibleLinks}
-          linkColors={LINK_COLORS}
-          width={canvasSize.width}
-          height={canvasSize.height}
-          onNodeClick={handleNodeClick}
-          selectedNodeId={postId}
-          scale={scale}
-          pan={pan}
-          onPanZoom={handlePanZoom}
-        />
-      </div>
+    <div ref={containerRef} style={styles.container}>
+      <NetworkCanvas
+        nodes={nodes}
+        links={links}
+        width={canvasSize.width}
+        height={canvasSize.height}
+        onNodeClick={handleNodeClick}
+        selectedNodeId={postId}
+        scale={scale}
+        pan={pan}
+        onPanZoom={handlePanZoom}
+      />
 
       {selectedPost && (
         <PostModal
           post={selectedPost}
-          username={activeUser}
+          username={username}
           onClose={() => setSelectedPost(null)}
           onLike={handleLike}
-          onComment={handleComment}
           isLiked={isSelectedLiked}
-          isProtected={isProtected}
         />
       )}
-
-      {isProtected && <div style={styles.protectionOverlay}>Protected View Active</div>}
 
       {/* Status indicators */}
       <div style={styles.statusBar}>
         <div style={styles.statusText}>
-          Nodes: {nodes.length} | Visible: {filteredPosts.length} | Posts: {posts.length} / {allPosts.length}
+          Nodes: {nodes.length} | Posts: {posts.length} / {allPosts.length}
         </div>
         <div style={styles.statusText}>
           Zoom: {(scale * 100).toFixed(0)}%
         </div>
-      </div>
-
-      <div style={styles.legendPanel}>
-        <p style={styles.legendTitle}>Connection Key</p>
-        {Object.entries(LINK_COLORS).map(([type, color]) => (
-          <label key={type} style={styles.legendRow}>
-            <input
-              type="checkbox"
-              checked={!!linkFilters[type]}
-              onChange={(e) =>
-                setLinkFilters((prev) => ({ ...prev, [type]: e.target.checked }))
-              }
-            />
-            <span style={{ ...styles.legendSwatch, backgroundColor: color }} />
-            <span style={styles.legendLabel}>{type.replace("_", " ")}</span>
-          </label>
-        ))}
       </div>
     </div>
   );
@@ -622,14 +323,10 @@ const NetworkFYP = ({ username }) => {
 
 const styles = {
   container: {
-    position: "fixed",
-    inset: 0,
     width: "100vw",
     height: "100vh",
-    backgroundColor: "#E8E4D9",
-    backgroundImage:
-      "linear-gradient(#D3CDC1 1px, transparent 1px), linear-gradient(90deg, #D3CDC1 1px, transparent 1px)",
-    backgroundSize: "40px 40px",
+    backgroundColor: "#000",
+    position: "relative",
     overflow: "hidden",
   },
   centerScreen: {
@@ -639,22 +336,19 @@ const styles = {
     flexDirection: "column",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#E8E4D9",
-    backgroundImage:
-      "linear-gradient(#D3CDC1 1px, transparent 1px), linear-gradient(90deg, #D3CDC1 1px, transparent 1px)",
-    backgroundSize: "40px 40px",
+    backgroundColor: "#000",
     gap: "16px",
   },
   spinner: {
     width: "36px",
     height: "36px",
-    border: "3px solid rgba(74,74,74,0.2)",
-    borderTop: "3px solid #A5A58D",
+    border: "3px solid rgba(255,255,255,0.15)",
+    borderTop: "3px solid #a78bfa",
     borderRadius: "50%",
     animation: "spin 0.8s linear infinite",
   },
   loadingText: {
-    color: "#6B705C",
+    color: "rgba(255,255,255,0.5)",
     fontSize: "14px",
     margin: 0,
   },
@@ -664,12 +358,12 @@ const styles = {
     margin: 0,
   },
   emptyText: {
-    color: "#6B705C",
+    color: "rgba(255,255,255,0.5)",
     fontSize: "15px",
     margin: 0,
   },
   retryBtn: {
-    background: "#A5A58D",
+    background: "#a78bfa",
     color: "#fff",
     border: "none",
     borderRadius: "8px",
@@ -685,138 +379,16 @@ const styles = {
     left: "16px",
     display: "flex",
     gap: "24px",
-    backgroundColor: "rgba(253, 251, 247, 0.88)",
+    backgroundColor: "rgba(0, 0, 0, 0.6)",
     backdropFilter: "blur(8px)",
-    border: "1px solid rgba(165, 165, 141, 0.45)",
+    border: "1px solid rgba(167, 139, 250, 0.2)",
     borderRadius: "8px",
     padding: "12px 16px",
     fontSize: "12px",
-    color: "#6B705C",
-  },
-  searchBar: {
-    position: "fixed",
-    top: "64px",
-    left: "50%",
-    transform: "translateX(-50%)",
-    zIndex: 20,
-    display: "flex",
-    alignItems: "center",
-    gap: "8px",
-    padding: "10px",
-    borderRadius: "12px",
-    backgroundColor: "rgba(253, 251, 247, 0.92)",
-    border: "1px solid rgba(165, 165, 141, 0.45)",
-    boxShadow: "0 10px 22px rgba(0,0,0,0.08)",
-  },
-  topNav: {
-    position: "fixed",
-    top: "12px",
-    left: "50%",
-    transform: "translateX(-50%)",
-    zIndex: 21,
-    display: "flex",
-    alignItems: "center",
-    gap: "10px",
-    padding: "10px 12px",
-    borderRadius: "12px",
-    backgroundColor: "rgba(253, 251, 247, 0.92)",
-    border: "1px solid rgba(165, 165, 141, 0.45)",
-    boxShadow: "0 10px 22px rgba(0,0,0,0.08)",
-  },
-  navLink: {
-    textDecoration: "none",
-    color: "#4A4A4A",
-    fontSize: "13px",
-    fontWeight: 700,
-    padding: "6px 10px",
-    borderRadius: "8px",
-    background: "rgba(232, 228, 217, 0.65)",
-    border: "1px solid rgba(165, 165, 141, 0.4)",
-  },
-  navBtn: {
-    color: "#4A4A4A",
-    fontSize: "13px",
-    fontWeight: 700,
-    padding: "6px 10px",
-    borderRadius: "8px",
-    background: "rgba(232, 228, 217, 0.65)",
-    border: "1px solid rgba(165, 165, 141, 0.4)",
-    cursor: "pointer",
-  },
-  searchInput: {
-    width: "min(460px, 62vw)",
-    padding: "10px 12px",
-    borderRadius: "8px",
-    border: "1px solid rgba(165, 165, 141, 0.55)",
-    backgroundColor: "#fff",
-    color: "#4A4A4A",
-    fontSize: "14px",
-    outline: "none",
-  },
-  searchBtn: {
-    padding: "10px 14px",
-    borderRadius: "8px",
-    border: "none",
-    background: "#A5A58D",
-    color: "#fff",
-    fontWeight: "600",
-    cursor: "pointer",
+    color: "rgba(255, 255, 255, 0.6)",
   },
   statusText: {
     margin: 0,
-  },
-  canvasWrap: {
-    position: "absolute",
-    inset: 0,
-  },
-  protectionOverlay: {
-    position: "fixed",
-    inset: 0,
-    zIndex: 80,
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    color: "#4A4A4A",
-    backgroundColor: "rgba(253, 251, 247, 0.24)",
-    backdropFilter: "blur(8px)",
-    pointerEvents: "none",
-    fontSize: "13px",
-    fontWeight: 700,
-  },
-  legendPanel: {
-    position: "fixed",
-    right: "16px",
-    bottom: "16px",
-    zIndex: 20,
-    minWidth: "190px",
-    padding: "10px 12px",
-    borderRadius: "12px",
-    backgroundColor: "rgba(253, 251, 247, 0.92)",
-    border: "1px solid rgba(165, 165, 141, 0.45)",
-    boxShadow: "0 10px 22px rgba(0,0,0,0.08)",
-  },
-  legendTitle: {
-    margin: "0 0 8px",
-    fontSize: "12px",
-    fontWeight: 700,
-    color: "#4A4A4A",
-  },
-  legendRow: {
-    display: "flex",
-    alignItems: "center",
-    gap: "8px",
-    marginBottom: "6px",
-    fontSize: "12px",
-    color: "#4A4A4A",
-  },
-  legendSwatch: {
-    width: "18px",
-    height: "3px",
-    borderRadius: "2px",
-    display: "inline-block",
-  },
-  legendLabel: {
-    textTransform: "capitalize",
   },
 };
 

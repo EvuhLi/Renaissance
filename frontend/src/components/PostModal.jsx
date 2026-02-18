@@ -1,10 +1,9 @@
 import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 
-const PostModal = ({ post, username, onClose, onLike, onComment, isLiked, isProtected = false }) => {
+const PostModal = ({ post, username, onClose, onLike, isLiked }) => {
   const navigate = useNavigate();
   const [commentText, setCommentText] = useState("");
-  const [isPostingComment, setIsPostingComment] = useState(false);
 
   if (!post) return null;
 
@@ -18,21 +17,17 @@ const PostModal = ({ post, username, onClose, onLike, onComment, isLiked, isProt
     onLike?.();
   };
 
-  const handleCommentSubmit = async (e) => {
+  const handleCommentSubmit = (e) => {
     e.preventDefault();
-    const text = commentText.trim();
-    if (!text || isPostingComment) return;
-    try {
-      setIsPostingComment(true);
-      const ok = await onComment?.(text);
-      if (ok) setCommentText("");
-    } finally {
-      setIsPostingComment(false);
+    if (commentText.trim()) {
+      console.log("Comment:", commentText);
+      setCommentText("");
+      // TODO: Send comment to backend
     }
   };
 
   return (
-    <div style={styles.overlay} onClick={onClose} onContextMenu={(e) => e.preventDefault()}>
+    <div style={styles.overlay} onClick={onClose}>
       <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
         {/* Close button */}
         <button style={styles.closeBtn} onClick={onClose} aria-label="Close">
@@ -45,12 +40,8 @@ const PostModal = ({ post, username, onClose, onLike, onComment, isLiked, isProt
             <img
               src={post.url}
               alt={post.title || "Artwork"}
-              style={{
-                ...styles.image,
-                filter: isProtected ? "blur(26px)" : "none",
-              }}
+              style={styles.image}
               draggable={false}
-              onContextMenu={(e) => e.preventDefault()}
             />
           </div>
 
@@ -136,13 +127,13 @@ const PostModal = ({ post, username, onClose, onLike, onComment, isLiked, isProt
                   />
                   <button
                     type="submit"
-                    disabled={!commentText.trim() || isPostingComment}
+                    disabled={!commentText.trim()}
                     style={{
                       ...styles.commentBtn,
-                      ...(commentText.trim() && !isPostingComment ? {} : styles.commentBtnDisabled),
+                      ...(commentText.trim() ? {} : styles.commentBtnDisabled),
                     }}
                   >
-                    {isPostingComment ? "Posting..." : "Post"}
+                    Post
                   </button>
                 </form>
               )}
@@ -150,7 +141,6 @@ const PostModal = ({ post, username, onClose, onLike, onComment, isLiked, isProt
           </div>
         </div>
       </div>
-      {isProtected && <div style={styles.protectionOverlay}>Protected View Active</div>}
     </div>
   );
 };
@@ -159,7 +149,7 @@ const styles = {
   overlay: {
     position: "fixed",
     inset: 0,
-    backgroundColor: "rgba(74, 74, 74, 0.45)",
+    backgroundColor: "rgba(0, 0, 0, 0.7)",
     backdropFilter: "blur(4px)",
     display: "flex",
     alignItems: "center",
@@ -168,26 +158,26 @@ const styles = {
     animation: "fadeIn 0.2s ease",
   },
   modal: {
-    backgroundColor: "#FDFBF7",
-    borderRadius: "14px",
+    backgroundColor: "#1a1a1a",
+    borderRadius: "12px",
     overflow: "hidden",
-    width: "min(1100px, 92vw)",
-    height: "min(720px, 88vh)",
+    maxWidth: "90%",
+    maxHeight: "90vh",
     display: "flex",
-    boxShadow: "0 20px 60px rgba(0, 0, 0, 0.22)",
+    boxShadow: "0 20px 60px rgba(0, 0, 0, 0.8)",
     animation: "slideUp 0.3s ease",
   },
   closeBtn: {
     position: "absolute",
     top: "12px",
     right: "12px",
-    backgroundColor: "rgba(253, 251, 247, 0.9)",
-    border: "1px solid rgba(165, 165, 141, 0.4)",
+    backgroundColor: "rgba(255, 255, 255, 0.1)",
+    border: "1px solid rgba(255, 255, 255, 0.2)",
     borderRadius: "50%",
     width: "32px",
     height: "32px",
     fontSize: "18px",
-    color: "#4A4A4A",
+    color: "#fff",
     cursor: "pointer",
     display: "flex",
     alignItems: "center",
@@ -199,11 +189,12 @@ const styles = {
     display: "flex",
     width: "100%",
     height: "100%",
+    maxHeight: "80vh",
   },
   imageSection: {
     flex: "0 0 50%",
     overflow: "hidden",
-    backgroundColor: "#E8E4D9",
+    backgroundColor: "#000",
   },
   image: {
     width: "100%",
@@ -221,16 +212,16 @@ const styles = {
   },
   header: {
     paddingBottom: "12px",
-    borderBottom: "1px solid rgba(165, 165, 141, 0.3)",
+    borderBottom: "1px solid rgba(167, 139, 250, 0.2)",
   },
   title: {
-    color: "#333",
+    color: "#fff",
     fontSize: "22px",
     fontWeight: "700",
     margin: "0 0 8px",
   },
   description: {
-    color: "#555",
+    color: "rgba(255, 255, 255, 0.7)",
     fontSize: "14px",
     margin: 0,
     lineHeight: "1.5",
@@ -242,10 +233,10 @@ const styles = {
     gap: "12px",
   },
   artistBtn: {
-    background: "rgba(165, 165, 141, 0.16)",
-    border: "1px solid rgba(165, 165, 141, 0.4)",
+    background: "rgba(167, 139, 250, 0.15)",
+    border: "1px solid rgba(167, 139, 250, 0.3)",
     borderRadius: "20px",
-    color: "#4A4A4A",
+    color: "#fff",
     fontSize: "13px",
     fontWeight: "600",
     padding: "6px 14px",
@@ -254,30 +245,30 @@ const styles = {
     transition: "all 0.2s ease",
   },
   artistAt: {
-    color: "#CB997E",
+    color: "#a78bfa",
     marginRight: "2px",
   },
   serendipityBadge: {
     display: "flex",
     alignItems: "center",
     gap: "5px",
-    backgroundColor: "rgba(165, 165, 141, 0.16)",
-    border: "1px solid rgba(165, 165, 141, 0.4)",
+    backgroundColor: "rgba(167, 139, 250, 0.15)",
+    border: "1px solid rgba(167, 139, 250, 0.3)",
     borderRadius: "12px",
     padding: "4px 10px",
     fontSize: "11px",
-    color: "#6B705C",
+    color: "rgba(255, 255, 255, 0.8)",
     fontWeight: "500",
   },
   serendipityIcon: {
     fontSize: "9px",
-    color: "#CB997E",
+    color: "#a78bfa",
   },
   tagsSection: {
     paddingTop: "8px",
   },
   tagsLabel: {
-    color: "#888",
+    color: "rgba(255, 255, 255, 0.5)",
     fontSize: "12px",
     fontWeight: "600",
     margin: "0 0 8px",
@@ -290,20 +281,20 @@ const styles = {
     gap: "6px",
   },
   tag: {
-    backgroundColor: "rgba(165, 165, 141, 0.16)",
-    border: "1px solid rgba(165, 165, 141, 0.4)",
+    backgroundColor: "rgba(167, 139, 250, 0.15)",
+    border: "1px solid rgba(167, 139, 250, 0.3)",
     borderRadius: "12px",
-    color: "#6B705C",
+    color: "#a78bfa",
     fontSize: "12px",
     padding: "4px 10px",
     whiteSpace: "nowrap",
   },
   commentsSection: {
     paddingTop: "16px",
-    borderTop: "1px solid rgba(165, 165, 141, 0.2)",
+    borderTop: "1px solid rgba(167, 139, 250, 0.1)",
   },
   commentsLabel: {
-    color: "#888",
+    color: "rgba(255, 255, 255, 0.5)",
     fontSize: "12px",
     fontWeight: "600",
     margin: "0 0 8px",
@@ -318,24 +309,24 @@ const styles = {
     gap: "8px",
   },
   comment: {
-    backgroundColor: "rgba(232, 228, 217, 0.65)",
+    backgroundColor: "rgba(255, 255, 255, 0.05)",
     borderRadius: "8px",
     padding: "8px 10px",
   },
   commentUser: {
-    color: "#6B705C",
+    color: "#a78bfa",
     fontSize: "12px",
     fontWeight: "600",
     margin: "0 0 2px",
   },
   commentText: {
-    color: "#4A4A4A",
+    color: "rgba(255, 255, 255, 0.8)",
     fontSize: "13px",
     margin: 0,
     wordBreak: "break-word",
   },
   noComments: {
-    color: "#A5A58D",
+    color: "rgba(255, 255, 255, 0.4)",
     fontSize: "13px",
     margin: 0,
     fontStyle: "italic",
@@ -343,7 +334,7 @@ const styles = {
   actions: {
     marginTop: "auto",
     paddingTop: "16px",
-    borderTop: "1px solid rgba(165, 165, 141, 0.2)",
+    borderTop: "1px solid rgba(167, 139, 250, 0.1)",
     display: "flex",
     flexDirection: "column",
     gap: "12px",
@@ -353,11 +344,11 @@ const styles = {
     alignItems: "center",
     justifyContent: "center",
     gap: "8px",
-    background: "rgba(165, 165, 141, 0.16)",
-    border: "1px solid rgba(165, 165, 141, 0.4)",
+    background: "rgba(167, 139, 250, 0.15)",
+    border: "1px solid rgba(167, 139, 250, 0.3)",
     borderRadius: "8px",
     padding: "8px 16px",
-    color: "#4A4A4A",
+    color: "#fff",
     cursor: "pointer",
     fontFamily: "inherit",
     fontSize: "14px",
@@ -365,8 +356,8 @@ const styles = {
     transition: "all 0.2s ease",
   },
   likeBtnActive: {
-    background: "rgba(203, 153, 126, 0.2)",
-    borderColor: "rgba(203, 153, 126, 0.6)",
+    background: "rgba(239, 68, 68, 0.25)",
+    borderColor: "rgba(239, 68, 68, 0.5)",
   },
   likeHeart: {
     fontSize: "18px",
@@ -380,17 +371,17 @@ const styles = {
   },
   commentInput: {
     flex: 1,
-    background: "rgba(232, 228, 217, 0.6)",
-    border: "1px solid rgba(165, 165, 141, 0.45)",
+    background: "rgba(255, 255, 255, 0.05)",
+    border: "1px solid rgba(167, 139, 250, 0.3)",
     borderRadius: "4px",
     padding: "8px 12px",
-    color: "#4A4A4A",
+    color: "#fff",
     fontSize: "13px",
     fontFamily: "inherit",
   },
   commentBtn: {
-    background: "#A5A58D",
-    border: "1px solid #A5A58D",
+    background: "rgba(167, 139, 250, 0.3)",
+    border: "1px solid rgba(167, 139, 250, 0.5)",
     borderRadius: "4px",
     color: "#fff",
     fontSize: "13px",
@@ -403,20 +394,6 @@ const styles = {
   commentBtnDisabled: {
     opacity: 0.5,
     cursor: "not-allowed",
-  },
-  protectionOverlay: {
-    position: "fixed",
-    inset: 0,
-    zIndex: 1100,
-    pointerEvents: "none",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    color: "#4A4A4A",
-    backgroundColor: "rgba(253, 251, 247, 0.18)",
-    backdropFilter: "blur(8px)",
-    fontSize: "13px",
-    fontWeight: "700",
   },
 };
 

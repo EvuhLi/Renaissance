@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Link, useLocation } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Link } from "react-router-dom";
 import { useState, useEffect } from "react";
 import "./App.css";
 
@@ -9,33 +9,19 @@ import SignUpPage from "./SignUpPage";
 import ProfilePage from "./ProfilePage";
 import AboutPage from "./AboutPage";
 import SearchPage from "./SearchPage";
-import AdminPortal from "./AdminPortal";
 
 const GRADIENT = "linear-gradient(90deg, #3dd5f3, #b14dff)";
 const NAV_HEIGHT = 56; // keep content from hiding under fixed nav
 
 function App() {
-  return (
-    <BrowserRouter>
-      <AppShell />
-    </BrowserRouter>
-  );
-}
-
-function AppShell() {
+  const [open, setOpen] = useState(false);
   const [accountId, setAccountId] = useState(
     typeof window !== "undefined" ? localStorage.getItem("accountId") : null
   );
-  const [role, setRole] = useState(
-    typeof window !== "undefined" ? localStorage.getItem("role") || "user" : "user"
-  );
-  const location = useLocation();
-  const hideNav = location.pathname === "/fyp";
   
   useEffect(() => {
     const handleStorageChange = () => {
       setAccountId(localStorage.getItem("accountId"));
-      setRole(localStorage.getItem("role") || "user");
     };
     
     window.addEventListener("storage", handleStorageChange);
@@ -47,13 +33,11 @@ function AppShell() {
   }, []);
   
   const storedAccountId = accountId;
-  const isAdmin = role === "admin";
   const profilePath = storedAccountId ? "/profile/" + encodeURIComponent(storedAccountId) : "/profile";
 
   return (
-    <>
+    <BrowserRouter>
       {/* FIXED NAVBAR */}
-      {!hideNav && (
       <nav
         style={{
           position: "fixed",
@@ -79,7 +63,7 @@ function AppShell() {
             textDecoration: "none",
             fontWeight: 900,
             letterSpacing: "0.4px",
-            color: "#f3ede2",
+            color: "#111",
           }}
         >
           LOOM
@@ -89,76 +73,53 @@ function AppShell() {
         <div style={{ display: "flex", gap: "30px", alignItems: "center" }}>
           {storedAccountId ? (
             <>
-              {!isAdmin && (
-                <Link
-                  to="/fyp"
-                  style={{
-                    textDecoration: "none",
-                    fontWeight: 700,
-                    color: "#111",
-                    fontSize: "14px",
-                  }}
-                >
-                  For You
-                </Link>
-              )}
-              {!isAdmin && (
-                <Link
-                  to="/about"
-                  style={{
-                    textDecoration: "none",
-                    fontWeight: 700,
-                    color: "#111",
-                    fontSize: "14px",
-                  }}
-                >
-                  About
-                </Link>
-              )}
-              {!isAdmin && (
-                <Link
-                  to="/search"
-                  style={{
-                    textDecoration: "none",
-                    fontWeight: 700,
-                    color: "#111",
-                    fontSize: "14px",
-                  }}
-                >
-                  Search
-                </Link>
-              )}
-              {isAdmin ? (
-                <Link
-                  to="/admin"
-                  style={{
-                    textDecoration: "none",
-                    fontWeight: 700,
-                    color: "#111",
-                    fontSize: "14px",
-                  }}
-                >
-                  Admin
-                </Link>
-              ) : (
-                <Link
-                  to={profilePath}
-                  style={{
-                    textDecoration: "none",
-                    fontWeight: 700,
-                    color: "#111",
-                    fontSize: "14px",
-                  }}
-                >
-                  Profile
-                </Link>
-              )}
+              <Link
+                to="/fyp"
+                style={{
+                  textDecoration: "none",
+                  fontWeight: 700,
+                  color: "#111",
+                  fontSize: "14px",
+                }}
+              >
+                For You
+              </Link>
+              <Link
+                to="/about"
+                style={{
+                  textDecoration: "none",
+                  fontWeight: 700,
+                  color: "#111",
+                  fontSize: "14px",
+                }}
+              >
+                About
+              </Link>
+              <Link
+                to="/search"
+                style={{
+                  textDecoration: "none",
+                  fontWeight: 700,
+                  color: "#111",
+                  fontSize: "14px",
+                }}
+              >
+                Search
+              </Link>
+              <Link
+                to={profilePath}
+                style={{
+                  textDecoration: "none",
+                  fontWeight: 700,
+                  color: "#111",
+                  fontSize: "14px",
+                }}
+              >
+                Profile
+              </Link>
               <button
                 onClick={() => {
                   localStorage.removeItem("accountId");
-                  localStorage.removeItem("username");
-                  localStorage.removeItem("role");
-                  localStorage.removeItem("adminToken");
                   window.dispatchEvent(new Event("accountIdChanged"));
                   window.location.href = "/";
                 }}
@@ -214,7 +175,6 @@ function AppShell() {
           )}
         </div>
       </nav>
-      )}
 
       <Routes>
         <Route path="/" element={<LandingPage />} />
@@ -225,9 +185,8 @@ function AppShell() {
         <Route path="/profile/:artistId" element={<ProfilePage />} />
         <Route path="/fyp" element={<NetworkFYP />} />
         <Route path="/search" element={<SearchPage />} />
-        <Route path="/admin" element={<AdminPortal />} />
       </Routes>
-    </>
+    </BrowserRouter>
   );
 }
 

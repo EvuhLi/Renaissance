@@ -3,9 +3,6 @@ const mongoose = require('mongoose');
 const postSchema = new mongoose.Schema({
   artistId:    { type: mongoose.Schema.Types.ObjectId, ref: 'Account', required: true },
   user:        { type: String, required: true },
-  postType:    { type: String, enum: ["original", "reply", "repost"], default: "original" },
-  inReplyToPostId: { type: mongoose.Schema.Types.ObjectId, ref: 'Post', default: null },
-  originalPostTimestamp: { type: Date, default: null },
   url:         { type: String, required: true },
   likes:       { type: Number, default: 0 },
   likedBy: {
