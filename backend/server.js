@@ -574,45 +574,6 @@ app.patch("/api/posts/:id/like", async (req, res) => {
 });
 
 // =============================
-// DELETE POST
-// =============================
-
-app.delete("/api/posts/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { username, artistId } = req.body || {};
-
-    if (!username && !artistId) {
-      return res.status(400).json({ error: "username or artistId required" });
-    }
-
-    const post = await Post.findById(id);
-    if (!post) {
-      return res.status(404).json({ error: "Post not found" });
-    }
-
-    const postUsername = String(post.user || "").trim().toLowerCase();
-    const postArtistId = post.artistId ? String(post.artistId) : "";
-    const requesterUsername = String(username || "").trim().toLowerCase();
-    const requesterArtistId = artistId ? String(artistId) : "";
-
-    const isOwner =
-      (requesterUsername && postUsername && requesterUsername === postUsername) ||
-      (requesterArtistId && postArtistId && requesterArtistId === postArtistId);
-
-    if (!isOwner) {
-      return res.status(403).json({ error: "Not authorized to delete" });
-    }
-
-    await Post.findByIdAndDelete(id);
-    return res.json({ ok: true, deletedId: id });
-  } catch (err) {
-    console.error("Delete Post Error:", err);
-    return res.status(500).json({ error: "Internal Server Error" });
-  }
-});
-
-// =============================
 // AUTH
 // =============================
 

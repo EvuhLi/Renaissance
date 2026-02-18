@@ -209,42 +209,6 @@ const ProfilePage = () => {
     return String(value);
   };
 
-  const deletePost = async (postId) => {
-    const pid = normalizeId(postId);
-    if (!pid) return false;
-    try {
-      const requesterUsername = String(
-        currentUser?.username || storedUsername || profileOwner?.username || ""
-      ).trim();
-      const requesterArtistId = normalizeId(
-        currentUser?._id || currentUser?.id || storedAccountId || profileOwner?._id
-      );
-
-      if (!requesterUsername && !requesterArtistId) {
-        throw new Error("Missing username or artistId for delete");
-      }
-
-      const response = await fetch(`${BACKEND_URL}/api/posts/${pid}`, {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          username: requesterUsername || undefined,
-          artistId: requesterArtistId || undefined,
-        }),
-      });
-      if (!response.ok) throw new Error("Failed to delete post");
-
-      setPosts((prev) => prev.filter((p) => normalizeId(p._id || p.id) !== pid));
-      setSelectedPost((prev) =>
-        prev && normalizeId(prev._id || prev.id) === pid ? null : prev
-      );
-      return true;
-    } catch (err) {
-      console.error("Delete post failed:", err);
-      return false;
-    }
-  };
-
   const visiblePosts = posts.filter((post) => {
     const postArtistId = normalizeId(
       post.artistId || (typeof post.user === "object" ? post.user._id : undefined)
@@ -788,7 +752,6 @@ const ProfilePage = () => {
             setSelectedPost={setSelectedPost}
             likedPosts={likedPosts}
             toggleButton={toggleButton}
-        onDelete={deletePost}
             addComment={async (postId, text) => {
           if (!text || !text.trim()) return null;
           const pid = normalizeId(postId);

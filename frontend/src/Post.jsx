@@ -172,7 +172,6 @@ const Post = ({
   likedPosts,
   toggleButton,
   addComment,
-  onDelete,
 }) => {
   // Local state to prevent rapid-fire clicking
   const [isProcessing, setIsProcessing] = useState(false);
@@ -236,43 +235,6 @@ const Post = ({
     }
   };
 
-  const resolvePostOwner = (post) => {
-    if (!post) return { username: "", artistId: "" };
-    const postUser = post.user;
-    const username =
-      postUser && typeof postUser === "object" ? postUser.username : postUser || "";
-    const rawArtistId =
-      post.artistId || (postUser && typeof postUser === "object" ? postUser._id : undefined);
-    const artistId =
-      rawArtistId && typeof rawArtistId === "object"
-        ? rawArtistId.$oid || String(rawArtistId)
-        : rawArtistId;
-    return { username, artistId };
-  };
-
-  const canDeleteSelected = (() => {
-    if (!selectedPost || !user) return false;
-    const { username, artistId } = resolvePostOwner(selectedPost);
-    const currentUsername = String(user?.username || "").trim().toLowerCase();
-    const currentArtistId =
-      user?._id || user?.id || user?.artistId || user?.accountId || "";
-    const normalizedArtistId =
-      currentArtistId && typeof currentArtistId === "object"
-        ? currentArtistId.$oid || String(currentArtistId)
-        : String(currentArtistId || "");
-
-    const usernameMatch =
-      currentUsername && username
-        ? String(username).trim().toLowerCase() === currentUsername
-        : false;
-    const artistMatch =
-      normalizedArtistId && artistId
-        ? String(artistId) === String(normalizedArtistId)
-        : false;
-
-    return Boolean(usernameMatch || artistMatch);
-  })();
-
   return (
     <>
       <div style={styles.grid} className="post-grid">
@@ -331,28 +293,27 @@ const Post = ({
               <div style={styles.modalHeader}>
                 <strong>
                   {(() => {
-                    const { username, artistId } = resolvePostOwner(selectedPost);
-                    const label = username || user.username || artistId;
-                    if (artistId) {
-                      return <Link to={`/profile/${artistId}`}>{label}</Link>;
+                    const postUser = selectedPost.user;
+                    const postUsername =
+                      postUser && typeof postUser === "object"
+                        ? postUser.username
+                        : postUser;
+                    const rawArtistId =
+                      selectedPost.artistId ||
+                      (postUser && typeof postUser === "object"
+                        ? postUser._id
+                        : undefined);
+                    const postArtistId =
+                      rawArtistId && typeof rawArtistId === "object"
+                        ? rawArtistId.$oid || String(rawArtistId)
+                        : rawArtistId;
+                    const label = postUsername || user.username || postArtistId;
+                    if (postArtistId) {
+                      return <Link to={`/profile/${postArtistId}`}>{label}</Link>;
                     }
                     return label;
                   })()}
                 </strong>
-                {onDelete && canDeleteSelected && (
-                  <button
-                    type="button"
-                    style={styles.deleteBtn}
-                    onClick={() => {
-                      const postId = selectedPost._id || selectedPost.id;
-                      if (window.confirm("Delete this post? This cannot be undone.")) {
-                        onDelete(postId);
-                      }
-                    }}
-                  >
-                    Delete
-                  </button>
-                )}
               </div>
 
               <div style={styles.modalMeta}>
@@ -523,30 +484,13 @@ const styles = {
     zIndex: 11,
   },
   modalInfoSide: { flex: 1, display: "flex", flexDirection: "column", overflowY: "auto" },
-  modalHeader: {
-    padding: "15px",
-    borderBottom: "1px solid #efefef",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: "12px",
-  },
+  modalHeader: { padding: "15px", borderBottom: "1px solid #efefef" },
   modalMeta: {
     padding: "12px 15px",
     borderBottom: "1px solid #efefef",
     display: "flex",
     flexDirection: "column",
     gap: "10px",
-  },
-  deleteBtn: {
-    border: "1px solid #f2b8b8",
-    background: "#fff5f5",
-    color: "#b42318",
-    fontSize: "12px",
-    fontWeight: 700,
-    padding: "6px 10px",
-    borderRadius: "999px",
-    cursor: "pointer",
   },
   title: { fontSize: "16px", fontWeight: "600", color: "#262626" },
   description: { fontSize: "14px", color: "#262626" },
