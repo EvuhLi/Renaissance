@@ -3,10 +3,16 @@ const mongoose = require('mongoose');
 const postSchema = new mongoose.Schema({
   artistId:    { type: mongoose.Schema.Types.ObjectId, ref: 'Account', required: true },
   user:        { type: String, required: true },
+  postCategory:{ type: String, enum: ["artwork", "process", "sketch"], default: "artwork" },
   postType:    { type: String, enum: ["original", "reply", "repost"], default: "original" },
   inReplyToPostId: { type: mongoose.Schema.Types.ObjectId, ref: 'Post', default: null },
   originalPostTimestamp: { type: Date, default: null },
   url:         { type: String, required: true },
+  previewUrl:  { type: String, default: "" },
+  processSlides: {
+    type: [String],
+    default: [],
+  },
   likes:       { type: Number, default: 0 },
   likedBy: {
     type: [String], // Array of usernames
@@ -30,5 +36,9 @@ const postSchema = new mongoose.Schema({
   },
   date: { type: Date, default: Date.now },
 });
+
+// Query hot paths
+postSchema.index({ artistId: 1, date: -1 });
+postSchema.index({ user: 1, date: -1 });
 
 module.exports = mongoose.model('Post', postSchema);

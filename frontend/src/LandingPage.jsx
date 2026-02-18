@@ -1,7 +1,7 @@
 import React from "react";
 import { Link } from "react-router-dom";
 // Make sure the path matches your file structure
-import logoBg from "./assets/MacBook Air - 1 (1).png";
+import logoBg from "./assets/MacBook Air - 1.png"; 
 
 export default function LandingPage() {
   return (
@@ -45,7 +45,7 @@ export default function LandingPage() {
         {/* The PNG Background: Set to absolute so it scrolls with the content */}
         <div style={{
           ...styles.backgroundLayer,
-          backgroundImage: `url('${logoBg}')`
+          backgroundImage: `url(${logoBg})`
         }} />
 
         <div style={styles.ctaContainer}>
@@ -55,7 +55,10 @@ export default function LandingPage() {
         </div>
       </main>
 
-      
+      {/* Adding some extra height/content below so you can see the scroll effect */}
+      <section style={styles.infoSection}>
+        <p style={styles.footerText}>SECURED BY SUB-PERCEPTUAL PERTURBATIONS</p>
+      </section>
     </div>
   );
 }
@@ -63,7 +66,7 @@ export default function LandingPage() {
 const styles = {
   pageWrapper: {
     backgroundColor: "#FFFBF3", // Parchment background
-    minHeight: "100vh", // Extra height to enable scrolling
+    minHeight: "150vh", // Extra height to enable scrolling
     width: "100%",
     position: "relative",
   },

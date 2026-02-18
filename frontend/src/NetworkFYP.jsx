@@ -7,7 +7,7 @@ import PostModal from "./components/PostModal";
 
 const BACKEND_URL = "http://localhost:3001";
 const INITIAL_VISIBLE_NODES = 28;
-const FETCH_LIMIT = 80;
+const FETCH_LIMIT = 48;
 const LOAD_MORE_STEP = 16;
 const CATEGORY_THRESHOLDS = {
   medium: 0.12,

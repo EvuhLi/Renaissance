@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from "react";
 import { useParams } from "react-router-dom";
 import Post from "./Post";
 
-const BACKEND_URL = "http://localhost:3001";
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:3001";
 
 // ==========================================
 // 1. PROTECTION UTILITIES
@@ -33,12 +33,18 @@ const checkIsAI = async (file) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ imageData: base64Image }),
     });
-    const result = await response.json();
+    if (!response.ok) return false;
+    const result = await response.json().catch(() => null);
+    const items = Array.isArray(result)
+      ? result
+      : Array.isArray(result?.result)
+      ? result.result
+      : [];
     const aiScore =
-      result.find((r) => r.label.toLowerCase() === "artificial")?.score || 0;
+      items.find((r) => String(r?.label || "").toLowerCase() === "artificial")?.score || 0;
     return aiScore > 0.7;
   } catch (error) {
-    console.error("Shield Error:", error);
+    console.warn("Shield check unavailable, continuing:", error?.message || error);
     return false;
   }
 };
@@ -74,6 +80,16 @@ const mergeManualTags = (mlTagsRaw, userTagsArray) => {
   return { ...base, manual: manualTags };
 };
 
+const fitSize = (width, height, maxSide) => {
+  const maxDim = Math.max(width, height);
+  if (!maxDim || maxDim <= maxSide) return { width, height };
+  const scale = maxSide / maxDim;
+  return {
+    width: Math.max(1, Math.round(width * scale)),
+    height: Math.max(1, Math.round(height * scale)),
+  };
+};
+
 // ==========================================
 // 3. MAIN COMPONENT
 // ==========================================
@@ -92,7 +108,9 @@ const ProfilePage = () => {
 
   // REFS
   const fileInputRef = useRef(null);
+  const processInputRef = useRef(null);
   const profileInputRef = useRef(null);
+  const postsReqSeqRef = useRef(0);
 
   // STATE
   
@@ -114,6 +132,7 @@ const ProfilePage = () => {
   const [newDescription, setNewDescription] = useState("");
   const [newTags, setNewTags] = useState("");
   const [newImageFile, setNewImageFile] = useState(null);
+  const [newProcessFiles, setNewProcessFiles] = useState([]);
   const [newTitle, setNewTitle] = useState("");
   const [newAccountUsername, setNewAccountUsername] = useState("");
   const [newAccountBio, setNewAccountBio] = useState("");
@@ -125,6 +144,7 @@ const ProfilePage = () => {
   const [user, setUser] = useState(null);
   const [viewer, setViewer] = useState(null);
   const [posts, setPosts] = useState([]);
+  const [isPostsLoading, setIsPostsLoading] = useState(true);
 
   const defaultUser = {
     username: storedUsername || "loom_artist_01",
@@ -209,42 +229,6 @@ const ProfilePage = () => {
     return String(value);
   };
 
-  const deletePost = async (postId) => {
-    const pid = normalizeId(postId);
-    if (!pid) return false;
-    try {
-      const requesterUsername = String(
-        currentUser?.username || storedUsername || profileOwner?.username || ""
-      ).trim();
-      const requesterArtistId = normalizeId(
-        currentUser?._id || currentUser?.id || storedAccountId || profileOwner?._id
-      );
-
-      if (!requesterUsername && !requesterArtistId) {
-        throw new Error("Missing username or artistId for delete");
-      }
-
-      const response = await fetch(`${BACKEND_URL}/api/posts/${pid}`, {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          username: requesterUsername || undefined,
-          artistId: requesterArtistId || undefined,
-        }),
-      });
-      if (!response.ok) throw new Error("Failed to delete post");
-
-      setPosts((prev) => prev.filter((p) => normalizeId(p._id || p.id) !== pid));
-      setSelectedPost((prev) =>
-        prev && normalizeId(prev._id || prev.id) === pid ? null : prev
-      );
-      return true;
-    } catch (err) {
-      console.error("Delete post failed:", err);
-      return false;
-    }
-  };
-
   const visiblePosts = posts.filter((post) => {
     const postArtistId = normalizeId(
       post.artistId || (typeof post.user === "object" ? post.user._id : undefined)
@@ -254,90 +238,100 @@ const ProfilePage = () => {
     ).toLowerCase();
     
     if (resolvedArtistId) {
-      const match = String(postArtistId) === String(resolvedArtistId);
-      if (!match && post.title) {
-        console.warn(`Post "${post.title}" filtered - postArtistId:`, postArtistId, "vs resolvedArtistId:", resolvedArtistId);
-      }
-      return match;
+      const byId = String(postArtistId) === String(resolvedArtistId);
+      const ownerUsername = String(user?.username || "").toLowerCase();
+      const byUsername = Boolean(ownerUsername && postUsername === ownerUsername);
+      return byId || byUsername;
     }
     
     const profileOwnerId = normalizeId(profileOwner?._id);
     if (profileOwnerId && postArtistId) {
-      const match = String(postArtistId) === String(profileOwnerId);
-      if (!match && post.title) {
-        console.warn(`Post "${post.title}" filtered - postArtistId:`, postArtistId, "vs profileOwnerId:", profileOwnerId);
-      }
-      return match;
+      const byId = String(postArtistId) === String(profileOwnerId);
+      const ownerUsername = String(profileOwner?.username || "").toLowerCase();
+      const byUsername = Boolean(ownerUsername && postUsername === ownerUsername);
+      return byId || byUsername;
     }
     
     if (profileOwner?.username) {
       const profileOwnerUsername = String(profileOwner.username).toLowerCase();
-      const match = postUsername === profileOwnerUsername;
-      if (!match && post.title) {
-        console.warn(`Post "${post.title}" filtered - postUsername:`, postUsername, "vs profileOwner.username:", profileOwnerUsername);
-      }
-      return match;
+      return postUsername === profileOwnerUsername;
     }
     
     return true;
   });
   
-  console.log("Total posts:", posts.length, "Visible posts:", visiblePosts.length);
-
   useEffect(() => {
     setUser(null);
     setProfileError("");
+    setIsPostsLoading(true);
 
-    const loadAccount = async () => {
+    const loadAccountAndPosts = async () => {
       try {
-        // Load the profile owner (the artist being viewed)
+        // PARALLEL FETCH: Fetch account and viewer in parallel to reduce waterfall latency
         const accountUrl = activeArtistId
           ? `${BACKEND_URL}/api/accounts/id/${encodeURIComponent(activeArtistId)}`
           : `${BACKEND_URL}/api/accounts/${encodeURIComponent(defaultUser.username)}`;
-        const res = await fetch(accountUrl);
-        if (res.ok) setUser(await res.json());
-        else setProfileError("Could not load artist profile.");
+        
+        const viewerFetchPromise = viewer
+          ? Promise.resolve(null) // Already have viewer, skip fetch
+          : fetch(`${BACKEND_URL}/api/accounts/${encodeURIComponent(defaultUser.username)}`)
+              .then((res) => res.ok ? res.json() : null)
+              .catch((err) => {
+                console.warn("Could not load default viewer account:", err);
+                return null;
+              });
 
-        // Also load and set the default viewer (current user) if not already set
-        if (!viewer) {
-          try {
-            const viewerRes = await fetch(
-              `${BACKEND_URL}/api/accounts/${encodeURIComponent(defaultUser.username)}`
-            );
-            if (viewerRes.ok) {
-              const viewerAccount = await viewerRes.json();
-              setViewer(viewerAccount);
-              console.log("Loaded default viewer account:", viewerAccount);
-            }
-          } catch (err) {
-            console.warn("Could not load default viewer account:", err);
-          }
+        // Fetch both account and viewer requests in parallel
+        const [accountRes, viewerData] = await Promise.all([
+          fetch(accountUrl),
+          viewerFetchPromise,
+        ]);
+
+        let loadedUser = null;
+        if (accountRes.ok) {
+          loadedUser = await accountRes.json();
+          setUser(loadedUser);
+        } else {
+          setProfileError("Could not load artist profile.");
         }
+
+        if (viewerData) {
+          setViewer(viewerData);
+          console.log("Loaded default viewer account:", viewerData);
+        }
+
+        const targetArtistId = normalizeId(loadedUser?._id || activeArtistId);
+        const targetUsername = String(
+          loadedUser?.username || defaultUser.username || ""
+        )
+          .trim()
+          .toLowerCase();
+
+        const params = new URLSearchParams();
+        if (targetArtistId) params.set("artistId", String(targetArtistId));
+        if (targetUsername) params.set("username", targetUsername);
+        params.set("limit", "36");
+
+        const reqSeq = ++postsReqSeqRef.current;
+        const postsUrl = `${BACKEND_URL}/api/posts${params.toString() ? `?${params}` : ""}`;
+        const postsRes = await fetch(postsUrl);
+        if (!postsRes.ok) {
+          console.error("Failed to fetch posts:", postsRes.status, postsRes.statusText);
+          if (reqSeq === postsReqSeqRef.current) setIsPostsLoading(false);
+          return;
+        }
+        const postsData = await postsRes.json();
+        if (reqSeq !== postsReqSeqRef.current) return;
+        setPosts(Array.isArray(postsData) ? postsData : []);
+        setIsPostsLoading(false);
       } catch (e) {
         console.error(e);
         setProfileError("Could not load artist profile.");
+        setIsPostsLoading(false);
       }
     };
 
-    const loadPosts = async () => {
-      try {
-        console.log("Loading posts from", `${BACKEND_URL}/api/posts`);
-        const res = await fetch(`${BACKEND_URL}/api/posts`);
-        console.log("Posts fetch response status:", res.status);
-        if (res.ok) {
-          const postsData = await res.json();
-          console.log("Fetched posts from backend:", postsData);
-          setPosts(postsData);
-        } else {
-          console.error("Failed to fetch posts:", res.status, res.statusText);
-        }
-      } catch (e) {
-        console.error("Posts fetch error:", e);
-      }
-    };
-
-    loadAccount();
-    loadPosts();
+    loadAccountAndPosts();
   }, [artistId, resolvedArtistId, activeArtistId]);
 
   useEffect(() => {
@@ -357,15 +351,23 @@ const ProfilePage = () => {
     };
   }, []);
 
-  useEffect(() => {
-    console.log("Viewer updated:", viewer);
-    console.log("CurrentUser would be:", viewer || defaultUser);
-  }, [viewer]);
-
   // --- HANDLERS FOR POSTS ---
   const handleFileChange = (e) => {
-    const file = e.target.files[0];
+    const file = e.target.files?.[0];
     if (file) setNewImageFile(file);
+  };
+
+  const handleProcessFilesChange = (e) => {
+    const files = Array.from(e.target.files || []);
+    setNewProcessFiles((prev) => [...prev, ...files]);
+  };
+
+  const handleRemoveProcessFile = (index) => {
+    setNewProcessFiles((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const handleClearProcessFiles = () => {
+    setNewProcessFiles([]);
   };
 
   // --- HANDLERS FOR PROFILE PIC ---
@@ -424,117 +426,149 @@ const ProfilePage = () => {
       alert("You can only create posts on your own profile.");
       return;
     }
-    if (!newImageFile) return;
+    const filesToProcess = [newImageFile, ...newProcessFiles].filter(Boolean);
+    if (!filesToProcess.length) return;
     const normalizedCurrentUsername = String(
       currentUser?.username || defaultUser.username
     ).toLowerCase();
-    setIsScanning(true);
-    setScanStatus("Checking for AI generation...");
-    
-    const isAI = await checkIsAI(newImageFile);
-    if (isAI) {
-      alert("BLOCKED: AI Generation detected.");
-      setIsScanning(false);
-      setScanStatus("");
-      return;
-    }
 
-    setScanStatus("Applying protection layer...");
-    const img = new Image();
-    img.src = URL.createObjectURL(newImageFile);
-    
-    img.onerror = () => {
-      console.error("Image failed to load");
-      setIsScanning(false);
-      setScanStatus("");
-      alert("Failed to process image. Please try again.");
-    };
-    
-    img.onload = async () => {
-      try {
-        const canvas = document.createElement("canvas");
-        canvas.width = img.width;
-        canvas.height = img.height;
-        const ctx = canvas.getContext("2d");
-        ctx.drawImage(img, 0, 0);
-        applyCloak(ctx, img.width, img.height);
-
-        setScanStatus("Analyzing artwork...");
-        const mlTagsRaw = await analyzeImageTags(canvas);
-        if (!mlTagsRaw) {
-          console.warn("ML tagging failed, continuing without ML tags");
-        }
-        const userTagsArray = newTags
-          .split(/[,#]/)
-          .map((t) => t.trim())
-          .filter(Boolean);
-        const mergedMlTags = mergeManualTags(mlTagsRaw, userTagsArray);
-        const flatTags = [
-          ...new Set([
-            ...userTagsArray,
-            ...Object.values(mergedMlTags)
-              .flat()
-              .map((t) => t.label),
-          ]),
-        ];
-
-        setScanStatus("Saving post...");
-        console.log("Current user before post creation:", currentUser);
-        const cloakedUrl = canvas.toDataURL("image/jpeg", 0.9);
-        const payload = {
-          user: normalizedCurrentUsername,
-          artistId: normalizeId(currentUser?._id) || undefined,
-          likes: 0,
-          comments: [],
-          url: cloakedUrl,
-          title: newTitle.trim(),
-          description: newDescription.trim(),
-          tags: flatTags,
-          mlTags: mergedMlTags,
-          date: new Date().toISOString(),
+    const cloakFileToDataUrl = (file, opts = {}) =>
+      new Promise((resolve, reject) => {
+        const { maxSide = 1400, quality = 0.82 } = opts;
+        const img = new Image();
+        const objectUrl = URL.createObjectURL(file);
+        img.onload = () => {
+          try {
+            const canvas = document.createElement("canvas");
+            const sized = fitSize(img.width, img.height, maxSide);
+            canvas.width = sized.width;
+            canvas.height = sized.height;
+            const ctx = canvas.getContext("2d");
+            ctx.drawImage(img, 0, 0, sized.width, sized.height);
+            applyCloak(ctx, sized.width, sized.height);
+            URL.revokeObjectURL(objectUrl);
+            resolve(canvas.toDataURL("image/jpeg", quality));
+          } catch (err) {
+            URL.revokeObjectURL(objectUrl);
+            reject(err);
+          }
         };
-        
-        console.log("Payload being sent to backend:", payload);
+        img.onerror = () => {
+          URL.revokeObjectURL(objectUrl);
+          reject(new Error("Image failed to load"));
+        };
+        img.src = objectUrl;
+      });
 
-        const response = await fetch(`${BACKEND_URL}/api/posts`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        
-        if (!response.ok) {
-          const errorData = await response.json();
-          console.error("Post creation failed:", errorData);
-          alert(`Failed to create post: ${errorData.message || response.statusText}`);
+    setIsScanning(true);
+    try {
+      const cloakedSlides = [];
+      let listPreviewUrl = "";
+      for (let i = 0; i < filesToProcess.length; i += 1) {
+        setScanStatus(`Checking AI (${i + 1}/${filesToProcess.length})...`);
+        const isAI = await checkIsAI(filesToProcess[i]);
+        if (isAI) {
+          alert(`BLOCKED: AI Generation detected in slide ${i + 1}.`);
           return;
         }
-        
-        const savedPost = await response.json();
-        console.log("Post created successfully:", savedPost);
-        console.log("SavedPost _id:", savedPost._id, "type:", typeof savedPost._id);
-        console.log("SavedPost artistId:", savedPost.artistId, "type:", typeof savedPost.artistId);
-        const saved = { ...savedPost, _id: normalizeId(savedPost._id) };
-        console.log("Normalized saved post:", saved);
-        console.log("Current posts before add:", posts.length);
-        setPosts((prev) => {
-          const updated = [saved, ...prev];
-          console.log("Posts updated. New count:", updated.length);
-          return updated;
-        });
-        setLikedPosts((prev) => ({ ...prev, [normalizeId(savedPost._id)]: false }));
-        setIsNewPostOpen(false);
-        setNewDescription("");
-        setNewTags("");
-        setNewTitle("");
-        setNewImageFile(null);
-      } catch (error) {
-        console.error("Create Post Error:", error);
-        alert("Error creating post. Check console for details.");
-      } finally {
-        setIsScanning(false);
-        setScanStatus("");
+        setScanStatus(`Applying protection (${i + 1}/${filesToProcess.length})...`);
+        const isCover = i === 0;
+        const cloaked = await cloakFileToDataUrl(
+          filesToProcess[i],
+          isCover
+            ? { maxSide: 1400, quality: 0.82 }
+            : { maxSide: 1080, quality: 0.76 }
+        );
+        cloakedSlides.push(cloaked);
+        if (isCover) {
+          listPreviewUrl = await cloakFileToDataUrl(filesToProcess[i], {
+            maxSide: 720,
+            quality: 0.68,
+          });
+        }
       }
-    };
+
+      const userTagsArray = newTags
+        .split(/[,#]/)
+        .map((t) => t.trim())
+        .filter(Boolean);
+
+      let mergedMlTags = { manual: userTagsArray.map((label) => ({ label, confidence: 0.75 })) };
+      let flatTags = [...new Set(userTagsArray)];
+
+      setScanStatus("Analyzing artwork...");
+      const canvas = document.createElement("canvas");
+      const previewImg = new Image();
+      await new Promise((resolve, reject) => {
+        previewImg.onload = resolve;
+        previewImg.onerror = reject;
+        previewImg.src = cloakedSlides[0];
+      });
+      canvas.width = previewImg.width;
+      canvas.height = previewImg.height;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(previewImg, 0, 0);
+
+      const mlTagsRaw = await analyzeImageTags(canvas);
+      if (!mlTagsRaw) {
+        console.warn("ML tagging failed, continuing without ML tags");
+      }
+      mergedMlTags = mergeManualTags(mlTagsRaw, userTagsArray);
+      flatTags = [
+        ...new Set([
+          ...userTagsArray,
+          ...Object.values(mergedMlTags)
+            .flat()
+            .map((t) => t.label),
+        ]),
+      ];
+
+      setScanStatus("Saving post...");
+      const payload = {
+        user: normalizedCurrentUsername,
+        artistId: normalizeId(currentUser?._id) || undefined,
+        likes: 0,
+        comments: [],
+        url: cloakedSlides[0],
+        previewUrl: listPreviewUrl || cloakedSlides[0],
+        processSlides: cloakedSlides.slice(1),
+        title: newTitle.trim(),
+        description: newDescription.trim(),
+        tags: flatTags,
+        mlTags: mergedMlTags,
+        date: new Date().toISOString(),
+      };
+
+      const response = await fetch(`${BACKEND_URL}/api/posts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        console.error("Post creation failed:", errorData);
+        alert(`Failed to create post: ${errorData.message || response.statusText}`);
+        return;
+      }
+
+      const savedPost = await response.json();
+      const saved = { ...savedPost, _id: normalizeId(savedPost._id) };
+      setPosts((prev) => [saved, ...prev]);
+      setLikedPosts((prev) => ({ ...prev, [normalizeId(savedPost._id)]: false }));
+      setIsNewPostOpen(false);
+      setNewDescription("");
+      setNewTags("");
+      setNewTitle("");
+      setNewImageFile(null);
+      setNewProcessFiles([]);
+    } catch (error) {
+      console.error("Create Post Error:", error);
+      alert("Error creating post. Check console for details.");
+    } finally {
+      setIsScanning(false);
+      setScanStatus("");
+    }
   };
 
   const handleCreateAccount = async (e) => {
@@ -747,7 +781,7 @@ const ProfilePage = () => {
 
             <div style={styles.statLine}>
               <span style={styles.statItem}>
-                <strong>{visiblePosts.length}</strong> drawings
+                <strong>{isPostsLoading ? "..." : visiblePosts.length}</strong> drawings
               </span>
               <span style={styles.statItem}>
                 <strong>{user?.followersCount ?? 0}</strong> followers
@@ -775,41 +809,52 @@ const ProfilePage = () => {
               accept="image/*"
             />
           </div>
+          <div style={styles.statsRow}>
+            <span><strong>{visiblePosts.length}</strong> drawings</span>
+            <span><strong>{profileOwner.followersCount}</strong> followers</span>
+          </div>
           <p style={styles.bio}>{profileOwner.bio}</p>
         </header>
 
         <div style={styles.galleryContainer} className="gallery-wrapper">
           {/* Post Grid */}
-      <Post
-            posts={visiblePosts}
-            user={currentUser}
-            isProtected={isProtected}
-            selectedPost={selectedPost}
-            setSelectedPost={setSelectedPost}
-            likedPosts={likedPosts}
-            toggleButton={toggleButton}
-        onDelete={deletePost}
-            addComment={async (postId, text) => {
-          if (!text || !text.trim()) return null;
-          const pid = normalizeId(postId);
-          try {
-            const response = await fetch(`${BACKEND_URL}/api/posts/${pid}/comment`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ username: currentUser?.username, text }),
-            });
-            if (!response.ok) throw new Error("Failed to add comment");
-            const updatedPost = await response.json();
-            // Update posts list and modal
-            setPosts((prev) => prev.map((p) => (normalizeId(p._id || p.id) === pid ? updatedPost : p)));
-            setSelectedPost((prev) => (prev && normalizeId(prev._id || prev.id) === pid ? updatedPost : prev));
-            return updatedPost;
-          } catch (err) {
-            console.error("Add comment failed:", err);
-            return null;
-          }
-        }}
-      />
+          {isPostsLoading ? (
+            <div style={styles.loadingPosts}>Loading posts...</div>
+          ) : (
+            <Post
+              posts={visiblePosts}
+              user={currentUser}
+              isProtected={isProtected}
+              selectedPost={selectedPost}
+              setSelectedPost={setSelectedPost}
+              likedPosts={likedPosts}
+              toggleButton={toggleButton}
+              addComment={async (postId, text) => {
+                if (!text || !text.trim()) return null;
+                const pid = normalizeId(postId);
+                try {
+                  const response = await fetch(`${BACKEND_URL}/api/posts/${pid}/comment`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ username: currentUser?.username, text }),
+                  });
+                  if (!response.ok) throw new Error("Failed to add comment");
+                  const updatedPost = await response.json();
+                  // Update posts list and modal
+                  setPosts((prev) =>
+                    prev.map((p) => (normalizeId(p._id || p.id) === pid ? updatedPost : p))
+                  );
+                  setSelectedPost((prev) =>
+                    prev && normalizeId(prev._id || prev.id) === pid ? updatedPost : prev
+                  );
+                  return updatedPost;
+                } catch (err) {
+                  console.error("Add comment failed:", err);
+                  return null;
+                }
+              }}
+            />
+          )}
 
       {/* Upload Modal */}        </div>
       </div>
@@ -818,7 +863,7 @@ const ProfilePage = () => {
         <div style={styles.overlay} onClick={() => setIsNewPostOpen(false)}>
           <div style={styles.modalCard} onClick={(e) => e.stopPropagation()}>
             <div style={styles.modalHeader}>
-              <h3 style={styles.modalTitle}>Upload Artwork</h3>
+              <h3 style={styles.modalTitle}>Upload Post</h3>
               <button style={styles.closeBtn} onClick={() => setIsNewPostOpen(false)}>
                 ✕
               </button>
@@ -832,9 +877,64 @@ const ProfilePage = () => {
                     alt="Preview"
                   />
                 ) : (
-                  <p style={{ color: "#888" }}>Click to select image</p>
+                  <p style={{ color: "#888" }}>
+                    Click to select artwork image
+                  </p>
                 )}
               </div>
+              <div style={styles.dropZone} onClick={() => processInputRef.current.click()}>
+                <p style={{ color: "#888", margin: 0 }}>
+                  {newProcessFiles.length
+                    ? `${newProcessFiles.length} process photo(s) selected (optional)`
+                    : "Add process photos/slides (optional)"}
+                </p>
+              </div>
+              {newProcessFiles.length > 0 && (
+                <>
+                  <div style={styles.processPreviewRow}>
+                    {newProcessFiles.map((file, idx) => (
+                      <div key={`${file.name}-${idx}`} style={styles.processPreviewItem}>
+                        <img
+                          src={URL.createObjectURL(file)}
+                          alt={`Process ${idx + 1}`}
+                          style={styles.processPreviewImg}
+                        />
+                        <button
+                          type="button"
+                          style={styles.removeProcessBtn}
+                          onClick={() => handleRemoveProcessFile(idx)}
+                        >
+                          x
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={styles.processActions}>
+                    <button
+                      type="button"
+                      style={styles.secondaryBtnMini}
+                      onClick={() => processInputRef.current?.click()}
+                    >
+                      Add More
+                    </button>
+                    <button
+                      type="button"
+                      style={styles.secondaryBtnMini}
+                      onClick={handleClearProcessFiles}
+                    >
+                      Clear All
+                    </button>
+                  </div>
+                </>
+              )}
+              <input
+                type="file"
+                ref={processInputRef}
+                style={{ display: "none" }}
+                onChange={handleProcessFilesChange}
+                accept="image/*"
+                multiple
+              />
               <input
                 type="text"
                 value={newTitle}
@@ -857,7 +957,9 @@ const ProfilePage = () => {
                 placeholder="Tags (e.g. #oil, #portrait)"
               />
               {newImageFile && (
-                <p style={styles.aiNote}>✨ Loom AI will analyze styles & protect your art.</p>
+                <p style={styles.aiNote}>
+                  Loom AI check + protection runs on artwork and process photos. Only artwork is auto-tagged.
+                </p>
               )}
               {isScanning && scanStatus && (
                 <p style={styles.scanStatus}>{scanStatus}</p>
@@ -1142,6 +1244,16 @@ const styles = {
     padding: "20px 10px",
     width: "100%",
   },
+  loadingPosts: {
+    width: "100%",
+    minHeight: "220px",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    color: "#67584f",
+    fontSize: "14px",
+    letterSpacing: "0.3px",
+  },
 
   overlay: {
     position: "fixed",
@@ -1208,6 +1320,56 @@ const styles = {
     fontFamily: "'Lato', sans-serif",
     margin: 0,
   },
+  processPreviewRow: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: "8px",
+    maxHeight: "120px",
+    overflowY: "auto",
+  },
+  processPreviewItem: {
+    position: "relative",
+    width: "72px",
+    height: "72px",
+    borderRadius: "6px",
+    overflow: "hidden",
+    border: "1px solid #ddd",
+    background: "#fff",
+  },
+  processPreviewImg: {
+    width: "100%",
+    height: "100%",
+    objectFit: "cover",
+    display: "block",
+  },
+  removeProcessBtn: {
+    position: "absolute",
+    top: "2px",
+    right: "2px",
+    border: "none",
+    background: "rgba(0,0,0,0.65)",
+    color: "#fff",
+    fontSize: "11px",
+    width: "18px",
+    height: "18px",
+    borderRadius: "50%",
+    cursor: "pointer",
+    lineHeight: 1,
+    padding: 0,
+  },
+  processActions: {
+    display: "flex",
+    gap: "8px",
+  },
+  secondaryBtnMini: {
+    border: "1px solid #A5A58D",
+    background: "#fff",
+    color: "#6B705C",
+    borderRadius: "999px",
+    padding: "6px 12px",
+    fontSize: "12px",
+    cursor: "pointer",
+  },
   modalFooter: {
     padding: "20px",
     background: "#F9F9F9",
@@ -1228,3 +1390,4 @@ const styles = {
 };
 
 export default ProfilePage;
+

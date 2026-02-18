@@ -1,12 +1,22 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 const PostModal = ({ post, username, onClose, onLike, onComment, isLiked, isProtected = false }) => {
   const navigate = useNavigate();
   const [commentText, setCommentText] = useState("");
   const [isPostingComment, setIsPostingComment] = useState(false);
+  const [slideIndex, setSlideIndex] = useState(0);
 
   if (!post) return null;
+  const processSlides = Array.isArray(post.processSlides)
+    ? post.processSlides.filter((s) => typeof s === "string" && s.trim())
+    : [];
+  const slides = [...(post.url ? [post.url] : []), ...processSlides];
+  const safeSlideIndex = Math.min(Math.max(slideIndex, 0), Math.max(slides.length - 1, 0));
+  const currentSlide = slides[safeSlideIndex] || post.url;
+  useEffect(() => {
+    setSlideIndex(0);
+  }, [post?._id, post?.id]);
 
   const handleArtistClick = (e) => {
     e.stopPropagation();
@@ -43,7 +53,7 @@ const PostModal = ({ post, username, onClose, onLike, onComment, isLiked, isProt
           {/* Image */}
           <div style={styles.imageSection}>
             <img
-              src={post.url}
+              src={currentSlide}
               alt={post.title || "Artwork"}
               style={{
                 ...styles.image,
@@ -52,6 +62,27 @@ const PostModal = ({ post, username, onClose, onLike, onComment, isLiked, isProt
               draggable={false}
               onContextMenu={(e) => e.preventDefault()}
             />
+            {slides.length > 1 && (
+              <>
+                <button
+                  style={{ ...styles.slideBtn, left: "12px" }}
+                  onClick={() => setSlideIndex((prev) => Math.max(0, prev - 1))}
+                  disabled={safeSlideIndex === 0}
+                >
+                  &lt;
+                </button>
+                <button
+                  style={{ ...styles.slideBtn, right: "12px" }}
+                  onClick={() => setSlideIndex((prev) => Math.min(slides.length - 1, prev + 1))}
+                  disabled={safeSlideIndex === slides.length - 1}
+                >
+                  &gt;
+                </button>
+                <div style={styles.slideCounter}>
+                  Slide {safeSlideIndex + 1} / {slides.length}
+                </div>
+              </>
+            )}
           </div>
 
           {/* Info Panel */}
@@ -204,12 +235,40 @@ const styles = {
     flex: "0 0 50%",
     overflow: "hidden",
     backgroundColor: "#E8E4D9",
+    position: "relative",
   },
   image: {
     width: "100%",
     height: "100%",
     objectFit: "contain",
     userSelect: "none",
+  },
+  slideBtn: {
+    position: "absolute",
+    top: "50%",
+    transform: "translateY(-50%)",
+    width: "34px",
+    height: "34px",
+    borderRadius: "999px",
+    border: "none",
+    backgroundColor: "rgba(255,255,255,0.85)",
+    color: "#222",
+    fontSize: "18px",
+    fontWeight: 700,
+    cursor: "pointer",
+    zIndex: 12,
+  },
+  slideCounter: {
+    position: "absolute",
+    bottom: "10px",
+    left: "50%",
+    transform: "translateX(-50%)",
+    background: "rgba(0,0,0,0.6)",
+    color: "#fff",
+    fontSize: "12px",
+    borderRadius: "999px",
+    padding: "4px 10px",
+    zIndex: 12,
   },
   infoPanel: {
     flex: "1",

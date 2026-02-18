@@ -90,6 +90,28 @@ async function ensureAdminAccount() {
   }
 }
 
+async function ensureIndexes() {
+  try {
+    // Create compound indexes for fast filtering + sorting
+    await Post.collection.createIndex({ artistId: 1, date: -1 });
+    await Post.collection.createIndex({ user: 1, date: -1 });
+    await Post.collection.createIndex({ date: -1 });
+    
+    // Create **case-insensitive** index for username lookups
+    // This allows fast username queries regardless of case
+    const userCollation = { locale: "en", strength: 2 };
+    await Post.collection.dropIndex("user_1_date_-1").catch(() => {}); // Remove old index if exists
+    await Post.collection.createIndex(
+      { user: 1, date: -1 },
+      { collation: userCollation, name: "user_ci_date" }
+    );
+    
+    console.log("✓ Database indexes created (including case-insensitive user index)");
+  } catch (e) {
+    console.warn("Index creation warning:", e.message);
+  }
+}
+
 // =============================
 // ENV
 // =============================
@@ -118,6 +140,7 @@ mongoose
   .then(async () => {
     console.log("MongoDB connected");
     await ensureAdminAccount();
+    await ensureIndexes();
   })
   .catch((err) => console.error("MongoDB connection error:", err));
 
@@ -185,19 +208,22 @@ app.post("/api/analyze", async (req, res) => {
       method: "POST",
       body: form,
       headers: form.getHeaders(),
+      timeout: 30000,
     });
 
     if (!mlResponse.ok) {
       const err = await mlResponse.text();
       console.error("ML analyze error:", err);
-      return res.status(502).json({ error: "ML service failed" });
+      // Graceful fallback: keep post flow working even if tagging service is down.
+      return res.json({});
     }
 
     const result = await mlResponse.json();
-    res.json(result);
+    res.json(result && typeof result === "object" ? result : {});
   } catch (err) {
     console.error("Analyze crash:", err.message);
-    res.status(500).json({ error: "Internal Server Error" });
+    // Graceful fallback instead of surfacing 500 to frontend.
+    res.json({});
   }
 });
 
@@ -206,6 +232,7 @@ app.post("/api/analyze", async (req, res) => {
 // =============================
 
 app.get("/api/accounts/id/:id", async (req, res) => {
+  const t0 = Date.now();
   try {
     const { id } = req.params;
 
@@ -219,6 +246,7 @@ app.get("/api/accounts/id/:id", async (req, res) => {
       return res.status(404).json({ error: "Account not found" });
     }
 
+    console.log(`[Accounts/ID] ${id}: ${Date.now() - t0}ms`);
     res.json(account);
   } catch (err) {
     console.error("Get Account By ID Error:", err);
@@ -231,113 +259,109 @@ app.get("/api/accounts/id/:id", async (req, res) => {
 // =============================
 
 app.get("/api/fyp", async (req, res) => {
+  const t0 = Date.now();
   try {
-    const { username } = req.query;
-    const normalizedUsername = String(username || "").trim().toLowerCase();
-    const limit = Math.min(parseInt(req.query.limit) || 20, 100); // Cap at 100 for safety
+    const limit = Math.min(parseInt(req.query.limit) || 24, 60);
+    const normalizedUsername = String(req.query.username || "").trim().toLowerCase();
 
-    let query = {};
-    if (normalizedUsername && normalizedUsername !== "undefined" && normalizedUsername !== "null") {
-      query = {
-        user: { $ne: normalizedUsername },
-        likedBy: { $ne: normalizedUsername },
-      };
-    }
-
-    const posts = await Post.find(query).sort({ date: -1 }).lean();
+    // CRITICAL: Fetch only specific fields to minimize document scan time
+    // Use .select() to only retrieve fields we need, avoiding full document retrieval
+    const t_query = Date.now();
+    const posts = await Post.find(
+      {},
+      "_id artistId user postCategory postType title description tags mlTags medium previewUrl likes likedBy date postType"
+    )
+      .sort({ date: -1 })
+      .limit(Math.min(limit * 2, 80))
+      .maxTimeMS(8000)
+      .lean();
+    console.log(`[FYP] Post.find: ${Date.now() - t_query}ms`);
 
     if (!posts.length) return res.json([]);
 
+    // Lightweight serialization for FYP
     const serializedPosts = posts.map((p) => ({
-      ...p,
       _id: p._id.toString(),
       artistId: p.artistId?.toString(),
+      user: p.user,
+      postCategory: p.postCategory || "artwork",
+      postType: p.postType || "original",
+      title: p.title,
+      description: p.description,
+      tags: p.tags || [],
       mlTags: p.mlTags || {},
+      medium: p.medium,
+      url: p.previewUrl || "",
+      likes: p.likes || 0,
+      likedBy: p.likedBy || [],
+      date: p.date,
     }));
 
-    let recommended = null;
-    let interactionHistory = [];
-    let followedArtistIds = [];
-    let viewerBehaviorStats = {};
-    let creatorBehaviorStats = {};
-
-    if (normalizedUsername) {
-      const usernameRegex = new RegExp(`^${escapeRegex(normalizedUsername)}$`, "i");
-      const account = await Account.findOne({ username: usernameRegex }).lean();
-      followedArtistIds = (account?.following || []).map((id) => String(id));
-      viewerBehaviorStats = {
-        bot_score: Number(account?.botScore || 0),
-        behavior_features: account?.behaviorFeatures || {},
-      };
-
-      // Build affinity interactions from existing likes/comments.
-      interactionHistory = serializedPosts.flatMap((post) => {
-        const events = [];
-        if ((post.likedBy || []).map((u) => String(u).toLowerCase()).includes(normalizedUsername)) {
-          events.push({ weight: 1.0, tags: post.mlTags || {} });
-        }
-        const ownComments = (post.comments || []).filter(
-          (c) => String(c?.user || "").toLowerCase() === normalizedUsername
-        );
-        ownComments.forEach(() => {
-          events.push({ weight: 0.85, tags: post.mlTags || {} });
-        });
-        return events;
-      });
-    }
-
-    // Per-artist behavior stats for quality-aware ranking in recommendation.py
-    const artistIds = [
-      ...new Set(
-        serializedPosts
-          .map((p) => String(p?.artistId || ""))
-          .filter(Boolean)
-      ),
-    ];
-    if (artistIds.length) {
-      const creatorAccounts = await Account.find(
-        { _id: { $in: artistIds } },
-        "_id botScore behaviorFeatures"
-      ).lean();
-      creatorBehaviorStats = creatorAccounts.reduce((acc, a) => {
-        const key = String(a?._id || "");
-        if (!key) return acc;
-        acc[key] = {
-          bot_score: Number(a?.botScore || 0),
-          behavior_features: a?.behaviorFeatures || {},
-        };
-        return acc;
-      }, {});
-    }
-
+    // Re-enable ML recommendation ranking (with graceful fallback).
     try {
-      const pyResponse = await nodeFetch(`${ML_SERVICE_URL}/recommendation/recommend`, {
+      const viewer = normalizedUsername
+        ? await Account.findOne(
+            { username: new RegExp(`^${escapeRegex(normalizedUsername)}$`, "i") },
+            "_id following"
+          ).lean()
+        : null;
+
+      const followedArtistIds = Array.isArray(viewer?.following)
+        ? viewer.following.map((id) => String(id))
+        : [];
+
+      const creatorIds = [
+        ...new Set(
+          serializedPosts
+            .map((p) => String(p.artistId || ""))
+            .filter((id) => mongoose.Types.ObjectId.isValid(id))
+        ),
+      ];
+
+      let creatorBehaviorStats = {};
+      if (creatorIds.length) {
+        const creatorAccounts = await Account.find(
+          { _id: { $in: creatorIds.map((id) => new mongoose.Types.ObjectId(id)) } },
+          "_id botScore behaviorFeatures"
+        ).lean();
+        creatorBehaviorStats = creatorAccounts.reduce((acc, a) => {
+          acc[String(a._id)] = {
+            bot_score: Number(a?.botScore ?? a?.behaviorFeatures?.botScore ?? 0),
+            behavior_features: a?.behaviorFeatures || {},
+          };
+          return acc;
+        }, {});
+      }
+
+      const mlRes = await nodeFetch(`${ML_SERVICE_URL}/recommendation/recommend`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           posts: serializedPosts,
           user_id: normalizedUsername || null,
-          interaction_history: interactionHistory,
           followed_artist_ids: followedArtistIds,
-          viewer_behavior_stats: viewerBehaviorStats,
           creator_behavior_stats: creatorBehaviorStats,
           top_n: limit,
         }),
+        timeout: 5000,
       });
 
-      if (!pyResponse.ok) {
-        console.warn("⚠️ Recommendation service returned non-OK status. Using fallback.");
+      if (mlRes.ok) {
+        const ranked = await mlRes.json();
+        if (Array.isArray(ranked) && ranked.length) {
+          console.log(`[FYP] ML recommend: ${Date.now() - t0}ms`);
+          return res.json(ranked.slice(0, limit));
+        }
       } else {
-        recommended = await pyResponse.json();
+        const detail = await mlRes.text().catch(() => "");
+        console.warn("FYP ML recommend non-OK:", mlRes.status, detail);
       }
-    } catch (fetchErr) {
-      console.warn("⚠️ Recommendation service unreachable — using fallback.", fetchErr.message || fetchErr);
+    } catch (mlErr) {
+      console.warn("FYP ML recommend failed, using local fallback:", mlErr.message || mlErr);
     }
 
-    // If ML service failed or returned non-OK, use the simple fallback
-    if (!recommended) return res.json(serializedPosts.slice(0, limit));
-
-    res.json(recommended);
+    console.log(`[FYP] Total time: ${Date.now() - t0}ms`);
+    return res.json(serializedPosts.slice(0, limit));
   } catch (err) {
     console.error("FYP Error:", err.message);
     res.status(500).json({ error: "Internal Server Error" });
@@ -381,9 +405,58 @@ app.post("/api/interaction", async (req, res) => {
 // =============================
 
 app.get("/api/posts", async (req, res) => {
+  const t0 = Date.now();
   try {
-    const posts = await Post.find().sort({ date: -1 });
-    res.json(posts);
+    const { artistId, username, skip, limit } = req.query;
+    const skipVal = Math.max(0, parseInt(skip) || 0);
+    const limitVal = Math.min(parseInt(limit) || 36, 120);
+    
+    let query = {};
+    // Fast path: exact artistId lookup uses index and avoids regex/$or.
+    if (artistId && mongoose.Types.ObjectId.isValid(String(artistId))) {
+      query = { artistId: new mongoose.Types.ObjectId(String(artistId)) };
+    } else if (username) {
+      // Use normalized lowercase string matching (index-friendly, not regex)
+      query = { user: String(username).trim().toLowerCase() };
+    }
+
+    const t_query = Date.now();
+    const queryBuilder = Post.find(query)
+      .select("_id artistId user previewUrl title description tags medium postCategory postType likes likedBy date");
+    
+    // Use case-insensitive collation if querying by username
+    if (query.user) {
+      queryBuilder.collation({ locale: "en", strength: 2 });
+    }
+    const posts = await queryBuilder
+      .sort({ date: -1 })
+      .skip(skipVal)
+      .limit(limitVal)
+      .maxTimeMS(8000)
+      .lean();
+    console.log(`[Posts] Find query: ${Date.now() - t_query}ms`);
+      
+    const normalized = posts.map((p) => ({
+      _id: String(p._id),
+      artistId: p.artistId ? String(p.artistId) : p.artistId,
+      user: p.user,
+      url: p.previewUrl || "",
+      title: p.title,
+      description: p.description,
+      tags: p.tags || [],
+      medium: p.medium,
+      postCategory: p.postCategory || "artwork",
+      postType: p.postType || "original",
+      likes: p.likes || 0,
+      likedBy: p.likedBy || [],
+      date: p.date,
+      // STRIPPED: processSlides, comments, mlTags to reduce payload size
+      // Use /api/posts/:id/full endpoint if full data needed
+    }));
+    
+    console.log(`[Posts] Total time: ${Date.now() - t0}ms, posts: ${posts.length}`);
+    // Return array directly (ProfilePage expects this format)
+    res.json(normalized);
   } catch (err) {
     console.error("Get Posts Error:", err);
     res.status(500).json({ error: "Internal Server Error" });
@@ -396,6 +469,9 @@ app.post("/api/posts", async (req, res) => {
       user,
       artistId,
       url,
+      processSlides,
+      previewUrl,
+      postCategory,
       title,
       description,
       tags,
@@ -404,9 +480,22 @@ app.post("/api/posts", async (req, res) => {
       postType,
       inReplyToPostId,
     } = req.body;
+    // NORMALIZE: Store usernames in lowercase for consistent index-based queries
+    const normalizedUser = String(user || "").trim().toLowerCase();
+    const resolvedCategory = ["artwork", "process", "sketch"].includes(postCategory)
+      ? postCategory
+      : "artwork";
+    const normalizedSlides = Array.isArray(processSlides)
+      ? processSlides.filter((s) => typeof s === "string" && s.trim()).map((s) => s.trim())
+      : [];
+    const coverUrl = (typeof url === "string" && url.trim()) ? url.trim() : normalizedSlides[0] || "";
+    const coverPreviewUrl =
+      typeof previewUrl === "string" && previewUrl.trim()
+        ? previewUrl.trim()
+        : coverUrl;
 
-    if (!user || !url)
-      return res.status(400).json({ error: "user and url required" });
+    if (!normalizedUser || !coverUrl)
+      return res.status(400).json({ error: "user and image(s) required" });
 
     let resolvedArtistId = artistId;
     const resolvedPostType = ["original", "reply", "repost"].includes(postType)
@@ -417,8 +506,8 @@ app.post("/api/posts", async (req, res) => {
 
     if (!resolvedArtistId) {
       const account = await Account.findOneAndUpdate(
-        { username: user },
-        { $setOnInsert: { username: user } },
+        { username: normalizedUser },
+        { $setOnInsert: { username: normalizedUser } },
         { new: true, upsert: true }
       );
       resolvedArtistId = account._id;
@@ -434,15 +523,21 @@ app.post("/api/posts", async (req, res) => {
 
     const newPost = await Post.create({
       artistId: resolvedArtistId,
-      user,
+      user: normalizedUser,
+      postCategory: resolvedCategory,
       postType: resolvedPostType,
       inReplyToPostId: resolvedInReplyToPostId,
       originalPostTimestamp: parentPostTimestamp,
-      url,
+      url: coverUrl,
+      previewUrl: coverPreviewUrl,
+      processSlides: normalizedSlides,
       title: title?.trim() || "",
       description: description?.trim() || "",
       tags: Array.isArray(tags) ? tags : [],
-      mlTags: mlTags || {},
+      mlTags:
+        resolvedCategory === "artwork"
+          ? (mlTags || {})
+          : (mlTags && typeof mlTags === "object" ? mlTags : {}),
       medium,
       likedBy: [],
     });
@@ -457,7 +552,7 @@ app.post("/api/posts", async (req, res) => {
           ? "post_repost"
           : "post_create",
       account,
-      username: user,
+      username: normalizedUser,
       post: newPost,
       postType: resolvedPostType,
       inReplyToPostId: resolvedInReplyToPostId,
@@ -469,6 +564,8 @@ app.post("/api/posts", async (req, res) => {
           : null,
       metadata: {
         medium: medium || "",
+        postCategory: resolvedCategory,
+        slideCount: normalizedSlides.length,
         hasMlTags: Boolean(mlTags && Object.keys(mlTags).length),
       },
     });
@@ -476,6 +573,37 @@ app.post("/api/posts", async (req, res) => {
     res.status(201).json(newPost);
   } catch (err) {
     console.error("Create Post Error:", err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+// =============================
+// GET FULL POST DETAILS (with processSlides + comments)
+// =============================
+// Lazy-loaded endpoint for full post details (process slides, all comments)
+// Called on-demand when user interacts with a post in detail view
+app.get("/api/posts/:id/full", async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ error: "Invalid post ID" });
+    }
+    
+    const post = await Post.findById(id).lean();
+    if (!post) {
+      return res.status(404).json({ error: "Post not found" });
+    }
+    
+    // Return full post with all details
+    res.json({
+      ...post,
+      _id: post._id.toString(),
+      artistId: post.artistId?.toString(),
+      // processSlides and comments included here (only fetched on-demand)
+    });
+  } catch (err) {
+    console.error("Get Full Post Error:", err);
     res.status(500).json({ error: "Internal Server Error" });
   }
 });
@@ -570,45 +698,6 @@ app.patch("/api/posts/:id/like", async (req, res) => {
   } catch (err) {
     console.error("Like Toggle Error:", err);
     res.status(500).json({ error: "Internal Server Error" });
-  }
-});
-
-// =============================
-// DELETE POST
-// =============================
-
-app.delete("/api/posts/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { username, artistId } = req.body || {};
-
-    if (!username && !artistId) {
-      return res.status(400).json({ error: "username or artistId required" });
-    }
-
-    const post = await Post.findById(id);
-    if (!post) {
-      return res.status(404).json({ error: "Post not found" });
-    }
-
-    const postUsername = String(post.user || "").trim().toLowerCase();
-    const postArtistId = post.artistId ? String(post.artistId) : "";
-    const requesterUsername = String(username || "").trim().toLowerCase();
-    const requesterArtistId = artistId ? String(artistId) : "";
-
-    const isOwner =
-      (requesterUsername && postUsername && requesterUsername === postUsername) ||
-      (requesterArtistId && postArtistId && requesterArtistId === postArtistId);
-
-    if (!isOwner) {
-      return res.status(403).json({ error: "Not authorized to delete" });
-    }
-
-    await Post.findByIdAndDelete(id);
-    return res.json({ ok: true, deletedId: id });
-  } catch (err) {
-    console.error("Delete Post Error:", err);
-    return res.status(500).json({ error: "Internal Server Error" });
   }
 });
 
@@ -844,12 +933,14 @@ app.patch("/api/accounts/:id/profile-pic", async (req, res) => {
 });
 
 app.get("/api/accounts/:username", async (req, res) => {
+  const t0 = Date.now();
   try {
     const { username } = req.params;
 
     let account = await Account.findOne({ username });
     if (!account) account = await Account.create({ username });
 
+    console.log(`[Accounts] ${username}: ${Date.now() - t0}ms`);
     res.json(account);
   } catch (err) {
     console.error("Account Error:", err);
@@ -1171,4 +1262,3 @@ if ((process.env.BEHAVIOR_ANALYSIS_ENABLED || "true").toLowerCase() !== "false")
     );
   }, intervalMs);
 }
-
