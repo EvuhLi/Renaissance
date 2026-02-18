@@ -175,7 +175,7 @@ const Post = ({
 }) => {
   return (
     <>
-      <div style={styles.grid}>
+      <div style={styles.grid} className="post-grid">
         {posts.map((post) => (
           <div
             key={post._id || post.id}
