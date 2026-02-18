@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 
-const PostModal = ({ post, username, onClose, onLike, onComment, isLiked }) => {
+const PostModal = ({ post, username, onClose, onLike, onComment, isLiked, isProtected = false }) => {
   const navigate = useNavigate();
   const [commentText, setCommentText] = useState("");
   const [isPostingComment, setIsPostingComment] = useState(false);
@@ -32,7 +32,7 @@ const PostModal = ({ post, username, onClose, onLike, onComment, isLiked }) => {
   };
 
   return (
-    <div style={styles.overlay} onClick={onClose}>
+    <div style={styles.overlay} onClick={onClose} onContextMenu={(e) => e.preventDefault()}>
       <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
         {/* Close button */}
         <button style={styles.closeBtn} onClick={onClose} aria-label="Close">
@@ -45,8 +45,12 @@ const PostModal = ({ post, username, onClose, onLike, onComment, isLiked }) => {
             <img
               src={post.url}
               alt={post.title || "Artwork"}
-              style={styles.image}
+              style={{
+                ...styles.image,
+                filter: isProtected ? "blur(26px)" : "none",
+              }}
               draggable={false}
+              onContextMenu={(e) => e.preventDefault()}
             />
           </div>
 
@@ -146,6 +150,7 @@ const PostModal = ({ post, username, onClose, onLike, onComment, isLiked }) => {
           </div>
         </div>
       </div>
+      {isProtected && <div style={styles.protectionOverlay}>Protected View Active</div>}
     </div>
   );
 };
@@ -166,8 +171,8 @@ const styles = {
     backgroundColor: "#FDFBF7",
     borderRadius: "14px",
     overflow: "hidden",
-    maxWidth: "90%",
-    maxHeight: "90vh",
+    width: "min(1100px, 92vw)",
+    height: "min(720px, 88vh)",
     display: "flex",
     boxShadow: "0 20px 60px rgba(0, 0, 0, 0.22)",
     animation: "slideUp 0.3s ease",
@@ -194,7 +199,6 @@ const styles = {
     display: "flex",
     width: "100%",
     height: "100%",
-    maxHeight: "80vh",
   },
   imageSection: {
     flex: "0 0 50%",
@@ -399,6 +403,20 @@ const styles = {
   commentBtnDisabled: {
     opacity: 0.5,
     cursor: "not-allowed",
+  },
+  protectionOverlay: {
+    position: "fixed",
+    inset: 0,
+    zIndex: 1100,
+    pointerEvents: "none",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    color: "#4A4A4A",
+    backgroundColor: "rgba(253, 251, 247, 0.18)",
+    backdropFilter: "blur(8px)",
+    fontSize: "13px",
+    fontWeight: "700",
   },
 };
 

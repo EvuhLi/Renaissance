@@ -9,6 +9,8 @@ const crypto = require("crypto");
 
 const Post = require("./models/Post");
 const Account = require("./models/Account");
+const { logActivityEvent } = require("./services/behaviorTracking");
+const { runBehaviorAnalysisBatch } = require("./services/behaviorAnalysis");
 
 const app = express();
 
@@ -198,11 +200,17 @@ app.get("/api/fyp", async (req, res) => {
     let recommended = null;
     let interactionHistory = [];
     let followedArtistIds = [];
+    let viewerBehaviorStats = {};
+    let creatorBehaviorStats = {};
 
     if (normalizedUsername) {
       const usernameRegex = new RegExp(`^${escapeRegex(normalizedUsername)}$`, "i");
       const account = await Account.findOne({ username: usernameRegex }).lean();
       followedArtistIds = (account?.following || []).map((id) => String(id));
+      viewerBehaviorStats = {
+        bot_score: Number(account?.botScore || 0),
+        behavior_features: account?.behaviorFeatures || {},
+      };
 
       // Build affinity interactions from existing likes/comments.
       interactionHistory = serializedPosts.flatMap((post) => {
@@ -220,6 +228,30 @@ app.get("/api/fyp", async (req, res) => {
       });
     }
 
+    // Per-artist behavior stats for quality-aware ranking in recommendation.py
+    const artistIds = [
+      ...new Set(
+        serializedPosts
+          .map((p) => String(p?.artistId || ""))
+          .filter(Boolean)
+      ),
+    ];
+    if (artistIds.length) {
+      const creatorAccounts = await Account.find(
+        { _id: { $in: artistIds } },
+        "_id botScore behaviorFeatures"
+      ).lean();
+      creatorBehaviorStats = creatorAccounts.reduce((acc, a) => {
+        const key = String(a?._id || "");
+        if (!key) return acc;
+        acc[key] = {
+          bot_score: Number(a?.botScore || 0),
+          behavior_features: a?.behaviorFeatures || {},
+        };
+        return acc;
+      }, {});
+    }
+
     try {
       const pyResponse = await nodeFetch(`${ML_SERVICE_URL}/recommendation/recommend`, {
         method: "POST",
@@ -229,6 +261,8 @@ app.get("/api/fyp", async (req, res) => {
           user_id: normalizedUsername || null,
           interaction_history: interactionHistory,
           followed_artist_ids: followedArtistIds,
+          viewer_behavior_stats: viewerBehaviorStats,
+          creator_behavior_stats: creatorBehaviorStats,
           top_n: limit,
         }),
       });
@@ -300,12 +334,28 @@ app.get("/api/posts", async (req, res) => {
 
 app.post("/api/posts", async (req, res) => {
   try {
-    const { user, artistId, url, title, description, tags, mlTags, medium } = req.body;
+    const {
+      user,
+      artistId,
+      url,
+      title,
+      description,
+      tags,
+      mlTags,
+      medium,
+      postType,
+      inReplyToPostId,
+    } = req.body;
 
     if (!user || !url)
       return res.status(400).json({ error: "user and url required" });
 
     let resolvedArtistId = artistId;
+    const resolvedPostType = ["original", "reply", "repost"].includes(postType)
+      ? postType
+      : "original";
+    let resolvedInReplyToPostId = null;
+    let parentPostTimestamp = null;
 
     if (!resolvedArtistId) {
       const account = await Account.findOneAndUpdate(
@@ -316,9 +366,20 @@ app.post("/api/posts", async (req, res) => {
       resolvedArtistId = account._id;
     }
 
+    if (resolvedPostType === "reply" && inReplyToPostId && mongoose.Types.ObjectId.isValid(inReplyToPostId)) {
+      const parentPost = await Post.findById(inReplyToPostId, "date").lean();
+      if (parentPost) {
+        resolvedInReplyToPostId = parentPost._id;
+        parentPostTimestamp = parentPost.date || null;
+      }
+    }
+
     const newPost = await Post.create({
       artistId: resolvedArtistId,
       user,
+      postType: resolvedPostType,
+      inReplyToPostId: resolvedInReplyToPostId,
+      originalPostTimestamp: parentPostTimestamp,
       url,
       title: title?.trim() || "",
       description: description?.trim() || "",
@@ -326,6 +387,32 @@ app.post("/api/posts", async (req, res) => {
       mlTags: mlTags || {},
       medium,
       likedBy: [],
+    });
+
+    const account = await Account.findById(resolvedArtistId, "_id username").lean();
+    await logActivityEvent({
+      req,
+      eventType:
+        resolvedPostType === "reply"
+          ? "post_reply"
+          : resolvedPostType === "repost"
+          ? "post_repost"
+          : "post_create",
+      account,
+      username: user,
+      post: newPost,
+      postType: resolvedPostType,
+      inReplyToPostId: resolvedInReplyToPostId,
+      originalPostTimestamp: parentPostTimestamp,
+      replyTimestamp: resolvedPostType === "reply" ? new Date() : null,
+      latencyMs:
+        resolvedPostType === "reply" && parentPostTimestamp
+          ? Date.now() - new Date(parentPostTimestamp).getTime()
+          : null,
+      metadata: {
+        medium: medium || "",
+        hasMlTags: Boolean(mlTags && Object.keys(mlTags).length),
+      },
     });
 
     res.status(201).json(newPost);
@@ -403,6 +490,22 @@ app.patch("/api/posts/:id/like", async (req, res) => {
         console.warn("Like interaction tracking failed:", mlErr.message || mlErr);
       }
     }
+
+    const likeAccount = await Account.findOne(
+      { username: new RegExp(`^${escapeRegex(normalizedUsername)}$`, "i") },
+      "_id username"
+    ).lean();
+    await logActivityEvent({
+      req,
+      eventType: alreadyLiked ? "unlike" : "like",
+      account: likeAccount,
+      username: normalizedUsername,
+      post: updatedPost,
+      postType: updatedPost?.postType || "original",
+      inReplyToPostId: updatedPost?.inReplyToPostId || null,
+      originalPostTimestamp: updatedPost?.originalPostTimestamp || null,
+      metadata: { alreadyLiked },
+    });
 
     res.json(updatedPost);
 
@@ -487,6 +590,14 @@ app.post("/api/auth/login", async (req, res) => {
       return res.status(401).json({ error: "Invalid username or password" });
     }
 
+    await logActivityEvent({
+      req,
+      eventType: "login",
+      account,
+      username: account.username,
+      metadata: { via: "password" },
+    });
+
     return res.json({
       message: "Login successful",
       user: {
@@ -545,6 +656,25 @@ app.post("/api/posts/:id/comment", async (req, res) => {
     } catch (mlErr) {
       console.warn("Comment interaction tracking failed:", mlErr.message || mlErr);
     }
+
+    const commentAccount = await Account.findOne(
+      { username: new RegExp(`^${escapeRegex(String(username))}$`, "i") },
+      "_id username"
+    ).lean();
+    const parentTimestamp = post?.date ? new Date(post.date) : null;
+    await logActivityEvent({
+      req,
+      eventType: "comment_create",
+      account: commentAccount,
+      username,
+      post: updated,
+      postType: "reply",
+      inReplyToPostId: post?._id || null,
+      originalPostTimestamp: parentTimestamp,
+      replyTimestamp: comment.createdAt,
+      latencyMs: parentTimestamp ? comment.createdAt.getTime() - parentTimestamp.getTime() : null,
+      metadata: { textLength: String(text).length },
+    });
 
     res.json(updated);
   } catch (err) {
@@ -661,6 +791,17 @@ app.patch("/api/accounts/:username/follow", async (req, res) => {
       );
     }
 
+    await logActivityEvent({
+      req,
+      eventType: alreadyFollowing ? "unfollow" : "follow",
+      account: followerAccount,
+      username: follower,
+      metadata: {
+        targetUsername: username,
+        targetId: String(targetId),
+      },
+    });
+
     res.json({ target: updatedTarget, follower: updatedFollower, isFollowing: !alreadyFollowing });
   } catch (err) {
     console.error("Follow Toggle Error:", err);
@@ -700,6 +841,17 @@ app.post("/api/accounts", async (req, res) => {
   }
 });
 
+app.post("/api/behavior/recompute", async (req, res) => {
+  try {
+    const limit = Math.min(Number(req.body?.limit) || 200, 5000);
+    const result = await runBehaviorAnalysisBatch(limit);
+    res.json({ ok: true, ...result, ranAt: new Date().toISOString() });
+  } catch (err) {
+    console.error("Behavior recompute error:", err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
 // =============================
 // START SERVER
 // =============================
@@ -707,3 +859,15 @@ app.post("/api/accounts", async (req, res) => {
 app.listen(PORT, () =>
   console.log(`🚀 Backend running on http://localhost:${PORT}`)
 );
+
+if ((process.env.BEHAVIOR_ANALYSIS_ENABLED || "true").toLowerCase() !== "false") {
+  const intervalMs = Math.max(
+    Number(process.env.BEHAVIOR_ANALYSIS_INTERVAL_MS) || 15 * 60 * 1000,
+    60 * 1000
+  );
+  setInterval(() => {
+    runBehaviorAnalysisBatch().catch((err) =>
+      console.warn("Behavior batch error:", err.message || err)
+    );
+  }, intervalMs);
+}

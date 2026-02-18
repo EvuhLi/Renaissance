@@ -8,6 +8,9 @@ const accountSchema = new mongoose.Schema({
   bio: { type: String, default: "" },
   followersCount: { type: Number, default: 0 },
   following: [{ type: mongoose.Schema.Types.ObjectId, ref: "Account" }],
+  botScore: { type: Number, default: 0 },
+  behaviorFeatures: { type: mongoose.Schema.Types.Mixed, default: {} },
+  lastBehaviorComputedAt: { type: Date, default: null },
 });
 
 module.exports = mongoose.model("Account", accountSchema);

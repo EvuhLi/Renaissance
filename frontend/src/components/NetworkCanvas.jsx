@@ -260,6 +260,7 @@ const NetworkCanvas = ({
       onMouseDown={handleMouseDown}
       onMouseUp={handleMouseUp}
       onMouseLeave={handleMouseUp}
+      onContextMenu={(e) => e.preventDefault()}
       width={width}
       height={height}
     />

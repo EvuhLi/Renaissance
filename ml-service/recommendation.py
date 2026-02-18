@@ -66,6 +66,7 @@ INTERACTION_WEIGHTS = {
 }
 
 FOLLOW_BOOST = 0.12
+MAX_BEHAVIOR_PENALTY = 0.22
 
 CATEGORY_WEIGHTS = {
     "medium":             0.15,
@@ -287,7 +288,8 @@ def compute_tag_score(post_tags: dict, user_affinity: dict,
 def compute_hybrid_score(user_id: Optional[str], post: dict,
                          user_affinity: dict, seen_tag_counts: dict,
                          exploration: float = 0.10,
-                         followed_artist_ids: Optional[set] = None) -> float:
+                         followed_artist_ids: Optional[set] = None,
+                         creator_behavior_stats: Optional[Dict[str, Dict[str, Any]]] = None) -> float:
     post_id   = str(post.get("_id", ""))
     artist_id = str(post.get("artistId", ""))
     post_tags = post.get("mlTags") or {}
@@ -300,16 +302,53 @@ def compute_hybrid_score(user_id: Optional[str], post: dict,
         else 0.0
     )
 
+    creator_stats = (creator_behavior_stats or {}).get(artist_id, {})
+    features = creator_stats.get("behavior_features", {}) if isinstance(creator_stats, dict) else {}
+    bot_score = creator_stats.get("bot_score", features.get("botScore", 0.0)) if isinstance(creator_stats, dict) else 0.0
+    try:
+        bot_score = float(bot_score)
+    except Exception:
+        bot_score = 0.0
+    bot_score = min(1.0, max(0.0, bot_score))
+
+    # Mild behavior-based downrank using already-computed telemetry features.
+    # This preserves the existing recommendation complexity while using trust signals.
+    try:
+        fast_reply_pct = float(features.get("fastReplyPct", 0.0))
+    except Exception:
+        fast_reply_pct = 0.0
+    try:
+        circadian_flatness = float(features.get("circadianFlatness", 0.0))
+    except Exception:
+        circadian_flatness = 0.0
+    try:
+        interval_regularity = float(features.get("intervalRegularity", 0.0))
+    except Exception:
+        interval_regularity = 0.0
+
+    fast_reply_pct = min(1.0, max(0.0, fast_reply_pct))
+    circadian_flatness = min(1.0, max(0.0, circadian_flatness))
+    interval_regularity = min(1.0, max(0.0, interval_regularity))
+
+    suspiciousness = (
+        0.60 * bot_score +
+        0.15 * fast_reply_pct +
+        0.15 * circadian_flatness +
+        0.10 * interval_regularity
+    )
+    behavior_factor = 1.0 - (MAX_BEHAVIOR_PENALTY * suspiciousness)
+    behavior_factor = min(1.0, max(1.0 - MAX_BEHAVIOR_PENALTY, behavior_factor))
+
     if not user_id or not post_id:
-        return min(1.0, tag_score + followed_boost)
+        return round(min(1.0, (tag_score + followed_boost) * behavior_factor), 4)
 
     alpha = _model.ncf_weight(user_id)
     if alpha == 0.0:
-        return min(1.0, tag_score + followed_boost)
+        return round(min(1.0, (tag_score + followed_boost) * behavior_factor), 4)
 
     ncf_score = _model.predict(user_id, post_id)
     base = alpha * ncf_score + (1 - alpha) * tag_score
-    return round(min(1.0, base + followed_boost), 4)
+    return round(min(1.0, (base + followed_boost) * behavior_factor), 4)
 
 
 # ==========================================
@@ -372,6 +411,8 @@ class RecommendRequest(BaseModel):
     user_id: Optional[str] = None
     interaction_history: Optional[List[Dict[str, Any]]] = []
     followed_artist_ids: Optional[List[str]] = []
+    viewer_behavior_stats: Optional[Dict[str, Any]] = {}
+    creator_behavior_stats: Optional[Dict[str, Dict[str, Any]]] = {}
     top_n: Optional[int] = 20
     exploration_factor: Optional[float] = 0.15
 
@@ -402,6 +443,7 @@ def recommend(req: RecommendRequest):
 
     affinity = build_user_affinity(req.interaction_history or [])
     followed_artist_ids = set(req.followed_artist_ids or [])
+    creator_behavior_stats = req.creator_behavior_stats or {}
 
     n_serendipity  = max(1, int(top_n * SERENDIPITY_RATIO))
     n_personalised = top_n - n_serendipity
@@ -416,6 +458,7 @@ def recommend(req: RecommendRequest):
             empty_seen,
             exploration,
             followed_artist_ids,
+            creator_behavior_stats,
         )
         post["ncf_weight"] = _model.ncf_weight(user_id) if user_id else 0.0
 
@@ -431,6 +474,7 @@ def recommend(req: RecommendRequest):
             seen_counts,
             exploration,
             followed_artist_ids,
+            creator_behavior_stats,
         )
 
     serendipity = pick_serendipity(remaining, personalised, n_serendipity)

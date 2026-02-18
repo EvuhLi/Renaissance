@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useForceSimulation } from "./hooks/useForceSimulation";
+import { useArtProtection } from "./hooks/useArtProtection";
 import NetworkCanvas from "./components/NetworkCanvas";
 import PostModal from "./components/PostModal";
 
@@ -27,6 +28,7 @@ const LINK_COLORS = {
 };
 
 const NetworkFYP = ({ username }) => {
+  const { isProtected } = useArtProtection();
   const [posts, setPosts] = useState([]);
   const [allPosts, setAllPosts] = useState([]); // All posts ever loaded
   const [searchQuery, setSearchQuery] = useState("");
@@ -446,7 +448,7 @@ const NetworkFYP = ({ username }) => {
   const isSelectedLiked = postId ? likedPosts[postId] : false;
 
   return (
-    <div ref={containerRef} style={styles.container}>
+    <div ref={containerRef} style={styles.container} onContextMenu={(e) => e.preventDefault()}>
       <div style={styles.topNav}>
         <Link to="/" style={styles.navLink}>Home</Link>
         <Link to="/about" style={styles.navLink}>About</Link>
@@ -484,18 +486,20 @@ const NetworkFYP = ({ username }) => {
         </button>
       </div>
 
-      <NetworkCanvas
-        nodes={nodes}
-        links={visibleLinks}
-        linkColors={LINK_COLORS}
-        width={canvasSize.width}
-        height={canvasSize.height}
-        onNodeClick={handleNodeClick}
-        selectedNodeId={postId}
-        scale={scale}
-        pan={pan}
-        onPanZoom={handlePanZoom}
-      />
+      <div style={{ ...styles.canvasWrap, filter: isProtected ? "blur(24px)" : "none" }}>
+        <NetworkCanvas
+          nodes={nodes}
+          links={visibleLinks}
+          linkColors={LINK_COLORS}
+          width={canvasSize.width}
+          height={canvasSize.height}
+          onNodeClick={handleNodeClick}
+          selectedNodeId={postId}
+          scale={scale}
+          pan={pan}
+          onPanZoom={handlePanZoom}
+        />
+      </div>
 
       {selectedPost && (
         <PostModal
@@ -505,8 +509,11 @@ const NetworkFYP = ({ username }) => {
           onLike={handleLike}
           onComment={handleComment}
           isLiked={isSelectedLiked}
+          isProtected={isProtected}
         />
       )}
+
+      {isProtected && <div style={styles.protectionOverlay}>Protected View Active</div>}
 
       {/* Status indicators */}
       <div style={styles.statusBar}>
@@ -682,6 +689,24 @@ const styles = {
   },
   statusText: {
     margin: 0,
+  },
+  canvasWrap: {
+    position: "absolute",
+    inset: 0,
+  },
+  protectionOverlay: {
+    position: "fixed",
+    inset: 0,
+    zIndex: 80,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    color: "#4A4A4A",
+    backgroundColor: "rgba(253, 251, 247, 0.24)",
+    backdropFilter: "blur(8px)",
+    pointerEvents: "none",
+    fontSize: "13px",
+    fontWeight: 700,
   },
   legendPanel: {
     position: "fixed",
