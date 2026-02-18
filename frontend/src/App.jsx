@@ -84,6 +84,17 @@ function App() {
                 For You
               </Link>
               <Link
+                to="/about"
+                style={{
+                  textDecoration: "none",
+                  fontWeight: 700,
+                  color: "#111",
+                  fontSize: "14px",
+                }}
+              >
+                About
+              </Link>
+              <Link
                 to={profilePath}
                 style={{
                   textDecoration: "none",
