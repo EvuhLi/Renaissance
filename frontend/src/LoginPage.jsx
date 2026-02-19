@@ -32,6 +32,8 @@ export default function LoginPage() {
     }
 
     try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10000);
       const response = await fetch(`${API_BASE}/api/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -40,7 +42,9 @@ export default function LoginPage() {
           password,
           captchaToken,
         }),
+        signal: controller.signal,
       });
+      clearTimeout(timer);
 
       const data = await response.json().catch(() => ({}));
 
@@ -48,6 +52,15 @@ export default function LoginPage() {
         localStorage.setItem("username", data.user.username);
         localStorage.setItem("accountId", data.user.id || "");
         localStorage.setItem("role", data.user.role || "user");
+        localStorage.setItem(
+          "viewerSnapshot",
+          JSON.stringify({
+            _id: data.user.id || "",
+            username: data.user.username || "",
+            role: data.user.role || "user",
+            following: [],
+          })
+        );
         if (data.user.adminToken) localStorage.setItem("adminToken", data.user.adminToken);
         else localStorage.removeItem("adminToken");
         window.dispatchEvent(new Event("accountIdChanged"));
@@ -64,7 +77,11 @@ export default function LoginPage() {
       }
     } catch (error) {
       console.error("Error:", error);
-      alert("Something went wrong connecting to the server.");
+      if (error?.name === "AbortError") {
+        alert("Login request timed out. Database/network may be unavailable.");
+      } else {
+        alert("Something went wrong connecting to the server.");
+      }
     }
   };
 

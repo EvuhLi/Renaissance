@@ -97,6 +97,19 @@ function withTimeout(promise, ms, message) {
   ]);
 }
 
+function isTransientDbError(err) {
+  const msg = String(err?.message || "").toLowerCase();
+  return (
+    msg.includes("timed out") ||
+    msg.includes("timeout") ||
+    msg.includes("network") ||
+    msg.includes("topology is closed") ||
+    msg.includes("before initial connection is complete") ||
+    msg.includes("buffercommands = false") ||
+    msg.includes("not connected")
+  );
+}
+
 function isValidAdminSession(token = "") {
   const expiry = adminSessions.get(token);
   if (!expiry) return false;
@@ -177,6 +190,18 @@ const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "loomadmin";
 const FAST_DEV_AUTH = (process.env.FAST_DEV_AUTH || "false").toLowerCase() === "true";
 const ADMIN_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const adminSessions = new Map();
+const fypResponseCache = new Map();
+
+function getLastCachedFyp() {
+  let latest = null;
+  for (const entry of fypResponseCache.values()) {
+    if (!entry?.data || !Array.isArray(entry.data) || entry.data.length === 0) continue;
+    if (!latest || Number(entry.ts || 0) > Number(latest.ts || 0)) {
+      latest = entry;
+    }
+  }
+  return latest?.data || null;
+}
 
 // =============================
 // DATABASE
@@ -294,7 +319,8 @@ app.get("/api/accounts/id/:id", async (req, res) => {
   try {
     const { id } = req.params;
 
-    if (!isDbReady() && FAST_DEV_AUTH) {
+    if (!isDbReady()) {
+      res.set("X-Data-Source", "degraded-db-not-ready");
       return res.json({
         _id: id,
         username: String(req.query.username || "dev_user"),
@@ -310,7 +336,11 @@ app.get("/api/accounts/id/:id", async (req, res) => {
       return res.status(400).json({ error: "Invalid account ID" });
     }
 
-    const account = await Account.findById(id).maxTimeMS(5000);
+    const account = await withTimeout(
+      Account.findById(id).maxTimeMS(2500),
+      3000,
+      "Account lookup timeout"
+    );
 
     if (!account) {
       return res.status(404).json({ error: "Account not found" });
@@ -320,8 +350,29 @@ app.get("/api/accounts/id/:id", async (req, res) => {
     res.set("Cache-Control", "public, max-age=15");
     res.json(account);
   } catch (err) {
-    console.error("Get Account By ID Error:", err);
-    res.status(500).json({ error: "Internal Server Error" });
+    if (isTransientDbError(err)) {
+      res.set("X-Data-Source", "degraded-transient-db-error");
+      return res.json({
+        _id: req.params.id,
+        username: String(req.query.username || "dev_user"),
+        role: "user",
+        profilePic: "",
+        bio: "",
+        followersCount: 0,
+        following: [],
+      });
+    }
+    console.error("Get Account By ID Error:", err?.message || err);
+    res.set("X-Data-Source", "degraded-account-id-error");
+    return res.json({
+      _id: req.params.id,
+      username: String(req.query.username || "dev_user"),
+      role: "user",
+      profilePic: "",
+      bio: "",
+      followersCount: 0,
+      following: [],
+    });
   }
 });
 
@@ -332,23 +383,87 @@ app.get("/api/accounts/id/:id", async (req, res) => {
 // Fast FYP endpoint - returns posts with images (gzipped)
 app.get("/api/fyp", async (req, res) => {
   const t0 = Date.now();
+  const usernameKey = String(req.query.username || "").trim().toLowerCase() || "anon";
+  const page = Math.max(parseInt(req.query.page) || 0, 0);
+  const requestedLimit = parseInt(req.query.limit);
+  const limit = Math.min(Number.isFinite(requestedLimit) ? requestedLimit : 12, 30);
+  const includeFollowedCommunities =
+    String(req.query.includeFollowedCommunities || "0") === "1";
+  const accountId = String(req.query.accountId || "").trim();
+  const cacheKey = `${usernameKey}:${page}:${limit}`;
+  const cached = fypResponseCache.get(cacheKey);
   try {
-    const limit = Math.min(parseInt(req.query.limit) || 12, 30); // Reduced default to 12
-    const page = Math.max(parseInt(req.query.page) || 0, 0);
+    if (!isDbReady()) {
+      if (cached?.data) {
+        res.set("X-FYP-Source", "stale-cache-db-not-ready");
+        return res.json(cached.data);
+      }
+      const anyCached = getLastCachedFyp();
+      if (anyCached) {
+        res.set("X-FYP-Source", "stale-cache-shared-db-not-ready");
+        return res.json(anyCached);
+      }
+      res.set("X-FYP-Source", "degraded-empty-db-not-ready");
+      return res.json([]);
+    }
     const skip = page * limit;
 
     // Fetch posts WITHOUT images initially - much faster
     const t_query = Date.now();
-    const posts = await Post.find(
-      {},
-      "_id artistId user postCategory postType title description tags communityTags medium likes likedBy date mlTags url"
-    )
-      .sort({ date: -1 })
-      .skip(skip)
-      .limit(limit)
-      .maxTimeMS(5000)
-      .lean();
+    let posts = await withTimeout(
+      Post.find(
+        {},
+        "_id artistId user postCategory postType title description tags communityTags medium likes likedBy date mlTags url"
+      )
+        .sort({ date: -1 })
+        .skip(skip)
+        .limit(limit)
+        .maxTimeMS(2500)
+        .lean(),
+      3500,
+      "FYP query timeout"
+    );
     console.log(`[FYP] Query time: ${Date.now() - t_query}ms, posts: ${posts.length}`);
+
+    if (
+      includeFollowedCommunities &&
+      mongoose.Types.ObjectId.isValid(accountId) &&
+      posts.length > 0
+    ) {
+      const account = await Account.findById(accountId, "_id communityFollowing")
+        .maxTimeMS(1500)
+        .lean()
+        .catch(() => null);
+      const followed = Array.isArray(account?.communityFollowing)
+        ? account.communityFollowing.filter((id) =>
+            mongoose.Types.ObjectId.isValid(String(id))
+          )
+        : [];
+      if (followed.length > 0) {
+        const communityPosts = await Post.find(
+          { "communityTags.communityId": { $in: followed } },
+          "_id artistId user postCategory postType title description tags communityTags medium likes likedBy date mlTags url"
+        )
+          .sort({ date: -1 })
+          .limit(limit)
+          .maxTimeMS(2000)
+          .lean()
+          .catch(() => []);
+        if (communityPosts.length > 0) {
+          const merged = [...communityPosts, ...posts];
+          const dedup = [];
+          const seen = new Set();
+          for (const p of merged) {
+            const id = String(p?._id || "");
+            if (!id || seen.has(id)) continue;
+            seen.add(id);
+            dedup.push(p);
+            if (dedup.length >= limit) break;
+          }
+          posts = dedup;
+        }
+      }
+    }
 
     if (!posts.length) return res.json([]);
 
@@ -379,11 +494,29 @@ app.get("/api/fyp", async (req, res) => {
     }));
 
     console.log(`[FYP] Total time: ${Date.now() - t0}ms`);
+    fypResponseCache.set(cacheKey, { data: serializedPosts, ts: Date.now() });
+    if (fypResponseCache.size > 24) {
+      const oldestKey = fypResponseCache.keys().next().value;
+      if (oldestKey) fypResponseCache.delete(oldestKey);
+    }
     res.set("Cache-Control", "public, max-age=15");
+    res.set("X-FYP-Source", "live-db");
     return res.json(serializedPosts);
   } catch (err) {
-    console.error("FYP Error:", err.message);
-    res.status(500).json({ error: "Internal Server Error" });
+    if (cached?.data && isTransientDbError(err)) {
+      res.set("X-FYP-Source", "stale-cache-transient-db-error");
+      return res.json(cached.data);
+    }
+    if (isTransientDbError(err)) {
+      const anyCached = getLastCachedFyp();
+      if (anyCached) {
+        res.set("X-FYP-Source", "stale-cache-shared-transient-db-error");
+        return res.json(anyCached);
+      }
+    }
+    console.error("FYP Error:", err?.message || err);
+    res.set("X-FYP-Source", "degraded-empty");
+    return res.json([]);
   }
 });
 
@@ -461,6 +594,10 @@ app.post("/api/interaction", async (req, res) => {
 app.get("/api/posts", async (req, res) => {
   const t0 = Date.now();
   try {
+    if (!isDbReady()) {
+      res.set("X-Data-Source", "degraded-db-not-ready");
+      return res.json([]);
+    }
     const { artistId, username, skip, limit } = req.query;
     const skipVal = Math.max(0, parseInt(skip) || 0);
     const limitVal = Math.min(parseInt(limit) || 36, 120);
@@ -482,12 +619,16 @@ app.get("/api/posts", async (req, res) => {
     if (query.user) {
       queryBuilder.collation({ locale: "en", strength: 2 });
     }
-    const posts = await queryBuilder
-      .sort({ date: -1 })
-      .skip(skipVal)
-      .limit(limitVal)
-      .maxTimeMS(8000)
-      .lean();
+    const posts = await withTimeout(
+      queryBuilder
+        .sort({ date: -1 })
+        .skip(skipVal)
+        .limit(limitVal)
+        .maxTimeMS(3000)
+        .lean(),
+      4000,
+      "Posts query timeout"
+    );
     console.log(`[Posts] Find query: ${Date.now() - t_query}ms`);
       
     const normalized = posts.map((p) => ({
@@ -521,8 +662,9 @@ app.get("/api/posts", async (req, res) => {
     res.set("Cache-Control", "public, max-age=10");
     res.json(normalized);
   } catch (err) {
-    console.error("Get Posts Error:", err);
-    res.status(500).json({ error: "Internal Server Error" });
+    console.error("Get Posts Error:", err?.message || err);
+    res.set("X-Data-Source", "degraded-posts-error");
+    return res.json([]);
   }
 });
 
@@ -1262,8 +1404,9 @@ app.patch("/api/accounts/:id/bio", async (req, res) => {
 app.get("/api/accounts/:username", async (req, res) => {
   const t0 = Date.now();
   try {
-    if (FAST_DEV_AUTH && !isDbReady()) {
+    if (!isDbReady()) {
       const username = String(req.params.username || "").trim().toLowerCase();
+      res.set("X-Data-Source", "degraded-db-not-ready");
       return res.json({
         _id: "",
         username: username || "dev_user",
@@ -1273,10 +1416,6 @@ app.get("/api/accounts/:username", async (req, res) => {
         followersCount: 0,
         following: [],
       });
-    }
-
-    if (!isDbReady()) {
-      return res.status(503).json({ error: "Database unavailable. Please retry shortly." });
     }
     const { username } = req.params;
     const normalized = String(username || "").trim().toLowerCase();
@@ -1296,7 +1435,20 @@ app.get("/api/accounts/:username", async (req, res) => {
     res.json(account);
   } catch (err) {
     console.error("Account Error:", err);
-    res.status(500).json({ error: "Internal Server Error" });
+    const username = String(req.params.username || "").trim().toLowerCase();
+    if (isTransientDbError(err)) {
+      res.set("X-Data-Source", "degraded-transient-db-error");
+      return res.json({
+        _id: "",
+        username: username || "dev_user",
+        role: "user",
+        profilePic: "",
+        bio: "",
+        followersCount: 0,
+        following: [],
+      });
+    }
+    return res.status(500).json({ error: "Internal Server Error" });
   }
 });
 
@@ -1454,20 +1606,30 @@ app.post("/api/communities", async (req, res) => {
 app.get("/api/communities/account/:accountId", async (req, res) => {
   try {
     const { accountId } = req.params;
+    if (!isDbReady()) {
+      res.set("X-Data-Source", "degraded-db-not-ready");
+      return res.json({ owned: [], followed: [] });
+    }
     if (!mongoose.Types.ObjectId.isValid(accountId)) {
       return res.status(400).json({ error: "Invalid account ID" });
     }
-    const account = await Account.findById(accountId, "_id communityFollowing").lean();
+    const account = await withTimeout(
+      Account.findById(accountId, "_id communityFollowing").maxTimeMS(2500).lean(),
+      3000,
+      "Community account lookup timeout"
+    );
     if (!account) return res.status(404).json({ error: "Account not found" });
 
     const [ownedRaw, followedRaw] = await Promise.all([
       Community.find({ ownerAccountId: account._id })
         .select("_id ownerAccountId ownerUsername name visibility followers")
         .sort({ name: 1 })
+        .maxTimeMS(2500)
         .lean(),
       Community.find({ _id: { $in: account.communityFollowing || [] } })
         .select("_id ownerAccountId ownerUsername name visibility followers")
         .sort({ name: 1 })
+        .maxTimeMS(2500)
         .lean(),
     ]);
 
@@ -1487,7 +1649,8 @@ app.get("/api/communities/account/:accountId", async (req, res) => {
     });
   } catch (err) {
     console.error("List Communities Error:", err);
-    return res.status(500).json({ error: "Internal Server Error" });
+    res.set("X-Data-Source", "degraded-communities-error");
+    return res.json({ owned: [], followed: [] });
   }
 });
 
@@ -1827,11 +1990,6 @@ app.post("/api/behavior/recompute", async (req, res) => {
 // =============================
 // START SERVER
 // =============================
-
-// SPA fallback: serve index.html for any non-API routes
-app.get("*", (req, res) => {
-  res.sendFile(path.join(__dirname, "../frontend/dist/index.html"));
-});
 
 app.listen(PORT, () =>
   console.log(`🚀 Backend running on http://localhost:${PORT}`)
