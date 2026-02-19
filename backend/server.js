@@ -128,18 +128,6 @@ const ADMIN_USERNAME = process.env.ADMIN_USERNAME || "loomadmin";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "loomadmin";
 const ADMIN_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const adminSessions = new Map();
-const fypResponseCache = new Map();
-
-function getLastCachedFyp() {
-  let latest = null;
-  for (const entry of fypResponseCache.values()) {
-    if (!entry?.data || !Array.isArray(entry.data) || entry.data.length === 0) continue;
-    if (!latest || Number(entry.ts || 0) > Number(latest.ts || 0)) {
-      latest = entry;
-    }
-  }
-  return latest?.data || null;
-}
 
 // =============================
 // DATABASE
@@ -410,16 +398,12 @@ app.get("/api/posts", async (req, res) => {
     if (query.user) {
       queryBuilder.collation({ locale: "en", strength: 2 });
     }
-    const posts = await withTimeout(
-      queryBuilder
-        .sort({ date: -1 })
-        .skip(skipVal)
-        .limit(limitVal)
-        .maxTimeMS(3000)
-        .lean(),
-      4000,
-      "Posts query timeout"
-    );
+    const posts = await queryBuilder
+      .sort({ date: -1 })
+      .skip(skipVal)
+      .limit(limitVal)
+      .maxTimeMS(8000)
+      .lean();
     console.log(`[Posts] Find query: ${Date.now() - t_query}ms`);
       
     const normalized = posts.map((p) => ({
@@ -444,9 +428,8 @@ app.get("/api/posts", async (req, res) => {
     // Return array directly (ProfilePage expects this format)
     res.json(normalized);
   } catch (err) {
-    console.error("Get Posts Error:", err?.message || err);
-    res.set("X-Data-Source", "degraded-posts-error");
-    return res.json([]);
+    console.error("Get Posts Error:", err);
+    res.status(500).json({ error: "Internal Server Error" });
   }
 });
 
@@ -1419,6 +1402,11 @@ app.post("/api/behavior/recompute", async (req, res) => {
 // =============================
 // START SERVER
 // =============================
+
+// SPA fallback: serve index.html for any non-API routes
+app.get("*", (req, res) => {
+  res.sendFile(path.join(__dirname, "../frontend/dist/index.html"));
+});
 
 app.listen(PORT, () =>
   console.log(`🚀 Backend running on http://localhost:${PORT}`)
