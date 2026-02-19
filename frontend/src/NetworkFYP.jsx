@@ -464,7 +464,6 @@ const NetworkFYP = ({ username }) => {
         staleOnError: true,
         staleMaxAgeMs: Infinity,
       });
-      let usedStarterFallback = false;
       let sourcePosts = Array.isArray(data) ? data : [];
       if (sourcePosts.length === 0) {
         const backup = await getJSONCached(`${BACKEND_URL}/api/posts?limit=${limit}`, {
@@ -479,14 +478,8 @@ const NetworkFYP = ({ username }) => {
         try {
           const raw = localStorage.getItem(fypLocalCacheKey);
           const parsed = raw ? JSON.parse(raw) : [];
-          const hasRealPosts =
-            Array.isArray(parsed) &&
-            parsed.length > 0 &&
-            parsed.some((p) => !p?._isStarter);
-          if (hasRealPosts) {
+          if (Array.isArray(parsed) && parsed.length > 0) {
             sourcePosts = parsed;
-          } else if (Array.isArray(parsed) && parsed.length > 0) {
-            localStorage.removeItem(fypLocalCacheKey);
           }
         } catch {
           // ignore local cache parse errors
@@ -494,7 +487,6 @@ const NetworkFYP = ({ username }) => {
       }
       if (sourcePosts.length === 0) {
         sourcePosts = STARTER_POSTS;
-        usedStarterFallback = true;
       }
       // Eager-load image URLs for network nodes
       const postsWithImages = await Promise.all(
@@ -516,12 +508,10 @@ const NetworkFYP = ({ username }) => {
       if (postsWithImages.length > 0) {
         setAllPosts(postsWithImages);
         setPosts(postsWithImages.slice(0, INITIAL_VISIBLE_NODES));
-        if (!usedStarterFallback) {
-          try {
-            localStorage.setItem(fypLocalCacheKey, JSON.stringify(postsWithImages));
-          } catch {
-            // ignore local storage write errors
-          }
+        try {
+          localStorage.setItem(fypLocalCacheKey, JSON.stringify(postsWithImages));
+        } catch {
+          // ignore local storage write errors
         }
       } else if (!allPosts.length) {
         setAllPosts([]);
@@ -868,14 +858,6 @@ const NetworkFYP = ({ username }) => {
 
       <div style={styles.legendPanel}>
         <p style={styles.legendTitle}>Connection Key</p>
-        <label style={styles.legendRow}>
-          <input
-            type="checkbox"
-            checked={includeFollowedCommunities}
-            onChange={(e) => setIncludeFollowedCommunities(e.target.checked)}
-          />
-          <span style={styles.legendLabel}>Include followed communities in FYP</span>
-        </label>
         {Object.entries(LINK_COLORS).map(([type, color]) => (
           <label key={type} style={styles.legendRow}>
             <input
