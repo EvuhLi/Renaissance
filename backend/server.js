@@ -238,10 +238,31 @@ app.get("/api/accounts/id/:id", async (req, res) => {
   const t0 = Date.now();
   try {
     const { id } = req.params;
+<<<<<<< HEAD
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ error: "Invalid account ID" });
     }
     const account = await Account.findById(id);
+=======
+
+    if (!isDbReady() && FAST_DEV_AUTH) {
+      return res.json({
+        _id: id,
+        username: String(req.query.username || "dev_user"),
+        role: "user",
+        profilePic: "",
+        bio: "",
+        followersCount: 0,
+        following: [],
+      });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ error: "Invalid account ID" });
+    }
+
+    const account = await Account.findById(id).maxTimeMS(5000);
+>>>>>>> parent of 5bf5b5b (fallback)
 
     if (!account) {
       return res.status(404).json({ error: "Account not found" });
@@ -250,7 +271,11 @@ app.get("/api/accounts/id/:id", async (req, res) => {
     console.log(`[Accounts/ID] ${id}: ${Date.now() - t0}ms`);
     res.json(account);
   } catch (err) {
+<<<<<<< HEAD
     console.error("Get Account By ID Error:", err?.message || err);
+=======
+    console.error("Get Account By ID Error:", err);
+>>>>>>> parent of 5bf5b5b (fallback)
     res.status(500).json({ error: "Internal Server Error" });
   }
 });
@@ -270,7 +295,11 @@ app.get("/api/fyp", async (req, res) => {
     const t_query = Date.now();
     const posts = await Post.find(
       {},
+<<<<<<< HEAD
       "_id artistId user postCategory postType title description tags medium likes likedBy date mlTags url"
+=======
+      "_id artistId user postCategory postType title description tags communityTags medium likes likedBy date mlTags url"
+>>>>>>> parent of 5bf5b5b (fallback)
     )
       .sort({ date: -1 })
       .skip(skip)
@@ -1002,6 +1031,25 @@ app.patch("/api/accounts/:id/profile-pic", async (req, res) => {
 app.get("/api/accounts/:username", async (req, res) => {
   const t0 = Date.now();
   try {
+<<<<<<< HEAD
+=======
+    if (FAST_DEV_AUTH && !isDbReady()) {
+      const username = String(req.params.username || "").trim().toLowerCase();
+      return res.json({
+        _id: "",
+        username: username || "dev_user",
+        role: "user",
+        profilePic: "",
+        bio: "",
+        followersCount: 0,
+        following: [],
+      });
+    }
+
+    if (!isDbReady()) {
+      return res.status(503).json({ error: "Database unavailable. Please retry shortly." });
+    }
+>>>>>>> parent of 5bf5b5b (fallback)
     const { username } = req.params;
 
     let account = await Account.findOne({ username });
@@ -1121,6 +1169,238 @@ app.patch("/api/accounts/:username/follow", async (req, res) => {
   }
 });
 
+<<<<<<< HEAD
+=======
+app.get("/api/health/db", async (_req, res) => {
+  try {
+    if (!isDbReady()) {
+      return res.status(503).json({ ok: false, readyState: mongoose.connection.readyState });
+    }
+    await mongoose.connection.db.admin().ping();
+    return res.json({ ok: true, readyState: mongoose.connection.readyState });
+  } catch (err) {
+    return res.status(503).json({
+      ok: false,
+      readyState: mongoose.connection.readyState,
+      error: err?.message || "db ping failed",
+    });
+  }
+});
+
+// =============================
+// COMMUNITIES
+// =============================
+
+app.post("/api/communities", async (req, res) => {
+  try {
+    const { ownerAccountId, ownerUsername, name, visibility } = req.body;
+    const ownerId = String(ownerAccountId || "").trim();
+    const communityName = String(name || "").trim();
+
+    if (!mongoose.Types.ObjectId.isValid(ownerId)) {
+      return res.status(400).json({ error: "Valid ownerAccountId required" });
+    }
+    if (!communityName) {
+      return res.status(400).json({ error: "Community name required" });
+    }
+
+    const owner = await Account.findById(ownerId, "_id username").lean();
+    if (!owner) return res.status(404).json({ error: "Owner account not found" });
+    const normalizedName = communityName.toLowerCase();
+
+    const existing = await Community.findOne({
+      ownerAccountId: owner._id,
+      normalizedName,
+    }).lean();
+    if (existing) {
+      return res.json({
+        _id: String(existing._id),
+        ownerAccountId: String(existing.ownerAccountId),
+        ownerUsername: existing.ownerUsername,
+        name: existing.name,
+        visibility: existing.visibility,
+        followersCount: Array.isArray(existing.followers) ? existing.followers.length : 0,
+      });
+    }
+
+    const created = await Community.create({
+      ownerAccountId: owner._id,
+      ownerUsername: String(ownerUsername || owner.username || "").trim().toLowerCase() || owner.username,
+      name: communityName,
+      normalizedName,
+      visibility: visibility === "private" ? "private" : "public",
+      followers: [owner._id],
+    });
+
+    await Account.findByIdAndUpdate(owner._id, {
+      $addToSet: { communityFollowing: created._id },
+    });
+
+    return res.status(201).json({
+      _id: String(created._id),
+      ownerAccountId: String(created.ownerAccountId),
+      ownerUsername: created.ownerUsername,
+      name: created.name,
+      visibility: created.visibility,
+      followersCount: 1,
+    });
+  } catch (err) {
+    console.error("Create Community Error:", err);
+    return res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+app.get("/api/communities/account/:accountId", async (req, res) => {
+  try {
+    const { accountId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(accountId)) {
+      return res.status(400).json({ error: "Invalid account ID" });
+    }
+    const account = await Account.findById(accountId, "_id communityFollowing").lean();
+    if (!account) return res.status(404).json({ error: "Account not found" });
+
+    const [ownedRaw, followedRaw] = await Promise.all([
+      Community.find({ ownerAccountId: account._id })
+        .select("_id ownerAccountId ownerUsername name visibility followers")
+        .sort({ name: 1 })
+        .lean(),
+      Community.find({ _id: { $in: account.communityFollowing || [] } })
+        .select("_id ownerAccountId ownerUsername name visibility followers")
+        .sort({ name: 1 })
+        .lean(),
+    ]);
+
+    const mapCommunity = (c) => ({
+      _id: String(c._id),
+      ownerAccountId: String(c.ownerAccountId),
+      ownerUsername: c.ownerUsername,
+      name: c.name,
+      visibility: c.visibility,
+      followersCount: Array.isArray(c.followers) ? c.followers.length : 0,
+    });
+
+    res.set("Cache-Control", "public, max-age=15");
+    return res.json({
+      owned: ownedRaw.map(mapCommunity),
+      followed: followedRaw.map(mapCommunity),
+    });
+  } catch (err) {
+    console.error("List Communities Error:", err);
+    return res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+app.post("/api/communities/:id/follow", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { accountId, username, postId } = req.body;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ error: "Invalid community ID" });
+    }
+    if (!mongoose.Types.ObjectId.isValid(String(accountId || ""))) {
+      return res.status(400).json({ error: "Valid accountId required" });
+    }
+
+    const community = await Community.findById(id);
+    if (!community) return res.status(404).json({ error: "Community not found" });
+
+    const account = await Account.findById(accountId, "_id username");
+    if (!account) return res.status(404).json({ error: "Account not found" });
+
+    const alreadyFollowing = (community.followers || []).some(
+      (f) => String(f) === String(account._id)
+    );
+    if (alreadyFollowing && !postId) {
+      return res.json({
+        ok: true,
+        status: "already_following",
+        community: {
+          _id: String(community._id),
+          ownerAccountId: String(community.ownerAccountId),
+          ownerUsername: community.ownerUsername,
+          name: community.name,
+          visibility: community.visibility,
+        },
+        linkedPost: null,
+      });
+    }
+
+    if (community.visibility === "private") {
+      const alreadyPending = (community.pendingRequests || []).some(
+        (r) => String(r.accountId) === String(account._id)
+      );
+      if (!alreadyPending) {
+        community.pendingRequests.push({
+          accountId: account._id,
+          username: String(username || account.username || "").trim().toLowerCase() || account.username,
+          postId: mongoose.Types.ObjectId.isValid(String(postId || "")) ? new mongoose.Types.ObjectId(String(postId)) : null,
+          createdAt: new Date(),
+        });
+        await community.save();
+      }
+      return res.json({ ok: true, status: "pending_approval" });
+    }
+
+    if (!alreadyFollowing) {
+      await Account.findByIdAndUpdate(account._id, {
+        $addToSet: { communityFollowing: community._id },
+      });
+      await Community.findByIdAndUpdate(community._id, {
+        $addToSet: { followers: account._id },
+      });
+    }
+
+    let linkedPost = null;
+    if (postId && mongoose.Types.ObjectId.isValid(String(postId))) {
+      const post = await Post.findOne({
+        _id: new mongoose.Types.ObjectId(String(postId)),
+        artistId: account._id,
+      });
+      if (post) {
+        const exists = (post.communityTags || []).some(
+          (t) => String(t.communityId) === String(community._id)
+        );
+        if (!exists) {
+          post.communityTags.push({
+            communityId: community._id,
+            name: community.name,
+            visibility: community.visibility,
+            ownerAccountId: community.ownerAccountId,
+          });
+          await post.save();
+        }
+        linkedPost = {
+          _id: String(post._id),
+          communityTags: (post.communityTags || []).map((c) => ({
+            communityId: c.communityId ? String(c.communityId) : "",
+            name: c.name || "",
+            visibility: c.visibility || "public",
+            ownerAccountId: c.ownerAccountId ? String(c.ownerAccountId) : "",
+          })),
+        };
+      }
+    }
+
+    return res.json({
+      ok: true,
+      status: "following",
+      community: {
+        _id: String(community._id),
+        ownerAccountId: String(community.ownerAccountId),
+        ownerUsername: community.ownerUsername,
+        name: community.name,
+        visibility: community.visibility,
+      },
+      linkedPost,
+    });
+  } catch (err) {
+    console.error("Community Follow/Link Error:", err);
+    return res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+>>>>>>> parent of 5bf5b5b (fallback)
 // =============================
 // CREATE ACCOUNT
 // =============================
