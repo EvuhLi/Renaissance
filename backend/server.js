@@ -11,13 +11,11 @@ const path = require("path");
 
 const Post = require("./models/Post");
 const Account = require("./models/Account");
-const Community = require("./models/Community");
 const ActivityLog = require("./models/ActivityLog");
 const { logActivityEvent } = require("./services/behaviorTracking");
 const { runBehaviorAnalysisBatch } = require("./services/behaviorAnalysis");
 
 const app = express();
-mongoose.set("bufferCommands", false);
 
 app.use(cors());
 app.use(compression({ level: 6, threshold: 1024 })); // Gzip responses > 1KB
@@ -46,68 +44,11 @@ function escapeRegex(text = "") {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function normalizeCommunityTags(rawTags, fallbackOwnerId) {
-  if (!Array.isArray(rawTags)) return [];
-  const fallbackOwnerIdRaw = String(fallbackOwnerId || "").trim();
-  const hasValidFallbackOwner = mongoose.Types.ObjectId.isValid(fallbackOwnerIdRaw);
-  const seen = new Set();
-  const normalized = [];
-  for (const tag of rawTags) {
-    const communityIdRaw = String(tag?.communityId || "").trim();
-    const name = String(tag?.name || "").trim();
-    if (!mongoose.Types.ObjectId.isValid(communityIdRaw) || !name) continue;
-    if (seen.has(communityIdRaw)) continue;
-    seen.add(communityIdRaw);
-    const ownerIdRaw = String(tag?.ownerAccountId || "").trim();
-    const ownerSourceId = mongoose.Types.ObjectId.isValid(ownerIdRaw)
-      ? ownerIdRaw
-      : hasValidFallbackOwner
-      ? fallbackOwnerIdRaw
-      : "";
-    if (!ownerSourceId) continue;
-    const ownerAccountId = new mongoose.Types.ObjectId(ownerSourceId);
-    normalized.push({
-      communityId: new mongoose.Types.ObjectId(communityIdRaw),
-      name,
-      visibility: tag?.visibility === "private" ? "private" : "public",
-      ownerAccountId,
-    });
-  }
-  return normalized;
-}
-
 function createAdminSessionToken() {
   const token = crypto.randomBytes(32).toString("hex");
   adminSessions.set(token, Date.now() + ADMIN_SESSION_TTL_MS);
   return token;
 }
-
-function isDbReady() {
-  return mongoose.connection.readyState === 1;
-}
-
-function withTimeout(promise, ms, message) {
-  return Promise.race([
-    promise,
-    new Promise((_, reject) =>
-      setTimeout(() => reject(new Error(message || "Operation timed out")), ms)
-    ),
-  ]);
-}
-
-function isTransientDbError(err) {
-  const msg = String(err?.message || "").toLowerCase();
-  return (
-    msg.includes("timed out") ||
-    msg.includes("timeout") ||
-    msg.includes("network") ||
-    msg.includes("topology is closed") ||
-    msg.includes("before initial connection is complete") ||
-    msg.includes("buffercommands = false") ||
-    msg.includes("not connected")
-  );
-}
-
 function isValidAdminSession(token = "") {
   const expiry = adminSessions.get(token);
   if (!expiry) return false;
@@ -185,7 +126,6 @@ const HF_API_TOKEN = process.env.HF_API_TOKEN;
 const HF_MODEL_URL = "https://router.huggingface.co/hf-inference/models/umm-maybe/AI-image-detector";
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || "loomadmin";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "loomadmin";
-const FAST_DEV_AUTH = (process.env.FAST_DEV_AUTH || "false").toLowerCase() === "true";
 const ADMIN_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const adminSessions = new Map();
 const fypResponseCache = new Map();
@@ -211,13 +151,7 @@ if (!MONGODB_URI) {
 }
 
 mongoose
-  .connect(MONGODB_URI, {
-    serverSelectionTimeoutMS: 4000,
-    connectTimeoutMS: 4000,
-    socketTimeoutMS: 10000,
-    maxPoolSize: 25,
-    retryWrites: false,
-  })
+  .connect(MONGODB_URI)
   .then(async () => {
     console.log("MongoDB connected");
     await ensureAdminAccount();
@@ -316,51 +250,19 @@ app.get("/api/accounts/id/:id", async (req, res) => {
   const t0 = Date.now();
   try {
     const { id } = req.params;
-
-    if (!isDbReady()) {
-      res.set("X-Data-Source", "degraded-db-not-ready");
-      return res.json({
-        _id: id,
-        username: String(req.query.username || "dev_user"),
-        role: "user",
-        profilePic: "",
-        bio: "",
-        followersCount: 0,
-        following: [],
-      });
-    }
-
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ error: "Invalid account ID" });
     }
-
-    const account = await withTimeout(
-      Account.findById(id).maxTimeMS(2500),
-      3000,
-      "Account lookup timeout"
-    );
+    const account = await Account.findById(id);
 
     if (!account) {
       return res.status(404).json({ error: "Account not found" });
     }
 
     console.log(`[Accounts/ID] ${id}: ${Date.now() - t0}ms`);
-    res.set("Cache-Control", "public, max-age=15");
     res.json(account);
   } catch (err) {
     console.error("Get Account By ID Error:", err?.message || err);
-    if (isTransientDbError(err)) {
-      res.set("X-Data-Source", "degraded-transient-db-error");
-      return res.json({
-        _id: req.params.id,
-        username: String(req.query.username || "dev_user"),
-        role: "user",
-        profilePic: "",
-        bio: "",
-        followersCount: 0,
-        following: [],
-      });
-    }
     res.status(500).json({ error: "Internal Server Error" });
   }
 });
@@ -502,7 +404,7 @@ app.get("/api/posts", async (req, res) => {
 
     const t_query = Date.now();
     const queryBuilder = Post.find(query)
-      .select("_id artistId user previewUrl title description tags communityTags medium postCategory postType likes likedBy date");
+      .select("_id artistId user previewUrl title description tags medium postCategory postType likes likedBy date");
     
     // Use case-insensitive collation if querying by username
     if (query.user) {
@@ -528,14 +430,6 @@ app.get("/api/posts", async (req, res) => {
       title: p.title,
       description: p.description,
       tags: p.tags || [],
-      communityTags: Array.isArray(p.communityTags)
-        ? p.communityTags.map((c) => ({
-            communityId: c.communityId ? String(c.communityId) : "",
-            name: c.name || "",
-            visibility: c.visibility || "public",
-            ownerAccountId: c.ownerAccountId ? String(c.ownerAccountId) : "",
-          }))
-        : [],
       medium: p.medium,
       postCategory: p.postCategory || "artwork",
       postType: p.postType || "original",
@@ -548,7 +442,6 @@ app.get("/api/posts", async (req, res) => {
     
     console.log(`[Posts] Total time: ${Date.now() - t0}ms, posts: ${posts.length}`);
     // Return array directly (ProfilePage expects this format)
-    res.set("Cache-Control", "public, max-age=10");
     res.json(normalized);
   } catch (err) {
     console.error("Get Posts Error:", err?.message || err);
@@ -569,7 +462,6 @@ app.post("/api/posts", async (req, res) => {
       title,
       description,
       tags,
-      communityTags,
       mlTags,
       medium,
       postType,
@@ -629,7 +521,6 @@ app.post("/api/posts", async (req, res) => {
       title: title?.trim() || "",
       description: description?.trim() || "",
       tags: Array.isArray(tags) ? tags : [],
-      communityTags: normalizeCommunityTags(communityTags, resolvedArtistId),
       mlTags:
         resolvedCategory === "artwork"
           ? (mlTags || {})
@@ -692,19 +583,10 @@ app.get("/api/posts/:id/full", async (req, res) => {
     }
     
     // Return full post with all details
-    res.set("Cache-Control", "public, max-age=10");
     res.json({
       ...post,
       _id: post._id.toString(),
       artistId: post.artistId?.toString(),
-      communityTags: Array.isArray(post.communityTags)
-        ? post.communityTags.map((c) => ({
-            communityId: c.communityId ? String(c.communityId) : "",
-            name: c.name || "",
-            visibility: c.visibility || "public",
-            ownerAccountId: c.ownerAccountId ? String(c.ownerAccountId) : "",
-          }))
-        : [],
       // processSlides and comments included here (only fetched on-demand)
     });
   } catch (err) {
@@ -885,74 +767,6 @@ app.delete("/api/posts/:id", async (req, res) => {
     res.status(500).json({ error: "Internal Server Error" });
   }
 });
-
-// UPDATE POST (OWNER ONLY)
-// =============================
-app.patch("/api/posts/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      return res.status(400).json({ error: "Invalid post ID" });
-    }
-
-    const {
-      actorAccountId,
-      actorUsername,
-      title,
-      description,
-      tags,
-      communityTags,
-    } = req.body || {};
-
-    const post = await Post.findById(id);
-    if (!post) return res.status(404).json({ error: "Post not found" });
-
-    const actorId = String(actorAccountId || "").trim();
-    const actorName = String(actorUsername || "").trim().toLowerCase();
-    const ownerId = String(post.artistId || "");
-    const ownerName = String(post.user || "").trim().toLowerCase();
-
-    const ownsById = mongoose.Types.ObjectId.isValid(actorId) && actorId === ownerId;
-    const ownsByName = Boolean(actorName && actorName === ownerName);
-    if (!ownsById && !ownsByName) {
-      return res.status(403).json({ error: "You can only edit your own posts" });
-    }
-
-    if (typeof title === "string") post.title = title.trim();
-    if (typeof description === "string") post.description = description.trim();
-    if (Array.isArray(tags)) {
-      post.tags = tags
-        .map((t) => String(t || "").trim())
-        .filter(Boolean)
-        .slice(0, 40);
-    }
-    if (Array.isArray(communityTags)) {
-      post.communityTags = normalizeCommunityTags(communityTags, post.artistId);
-    }
-
-    await post.save();
-
-    return res.json({
-      ...post.toObject(),
-      _id: String(post._id),
-      artistId: post.artistId ? String(post.artistId) : "",
-      communityTags: Array.isArray(post.communityTags)
-        ? post.communityTags.map((c) => ({
-            communityId: c.communityId ? String(c.communityId) : "",
-            name: c.name || "",
-            visibility: c.visibility || "public",
-            ownerAccountId: c.ownerAccountId ? String(c.ownerAccountId) : "",
-          }))
-        : [],
-    });
-  } catch (err) {
-    console.error("Update Post Error:", err);
-    return res.status(500).json({ error: "Internal Server Error" });
-  }
-});
-
-// =============================
-
 // =============================
 // AUTH
 // =============================
@@ -1017,40 +831,6 @@ app.post("/api/auth/login", async (req, res) => {
   try {
     const usernameRaw = (req.body.username || "").trim();
     const password = req.body.password || "";
-
-    if (FAST_DEV_AUTH) {
-      if (!usernameRaw || !password) {
-        return res.status(400).json({ error: "Username and password are required" });
-      }
-      const normalizedUsername = usernameRaw.toLowerCase();
-      if (normalizedUsername === ADMIN_USERNAME.toLowerCase() && password === ADMIN_PASSWORD) {
-        const adminToken = createAdminSessionToken();
-        return res.json({
-          message: "Admin login successful",
-          user: {
-            id: "admin",
-            username: ADMIN_USERNAME,
-            role: "admin",
-            email: null,
-            adminToken,
-          },
-        });
-      }
-      return res.json({
-        message: "Login successful (fast dev mode)",
-        user: {
-          id: "",
-          username: normalizedUsername,
-          email: null,
-          role: "user",
-        },
-      });
-    }
-
-    if (!isDbReady()) {
-      return res.status(503).json({ error: "Database unavailable. Please retry shortly." });
-    }
-
     if (!usernameRaw || !password) {
       return res.status(400).json({ error: "Username and password are required" });
     }
@@ -1058,10 +838,8 @@ app.post("/api/auth/login", async (req, res) => {
     const normalizedUsername = usernameRaw.toLowerCase();
     if (normalizedUsername === ADMIN_USERNAME.toLowerCase() && password === ADMIN_PASSWORD) {
       const adminAccount = await Account.findOne({
-        username: ADMIN_USERNAME.toLowerCase(),
-      })
-        .maxTimeMS(3000)
-        .lean();
+        username: new RegExp(`^${escapeRegex(ADMIN_USERNAME)}$`, "i"),
+      }).lean();
       const adminToken = createAdminSessionToken();
       return res.json({
         message: "Admin login successful",
@@ -1075,29 +853,23 @@ app.post("/api/auth/login", async (req, res) => {
       });
     }
 
-    const loginFilter = usernameRaw.includes("@")
-      ? { email: normalizedUsername }
-      : { username: normalizedUsername };
-    const account = await withTimeout(
-      Account.findOne(loginFilter)
-        .select("_id username email role passwordHash")
-        .maxTimeMS(2500)
-        .lean(),
-      3500,
-      "Login query timeout"
-    );
+    const usernameRegex = new RegExp(`^${escapeRegex(usernameRaw)}$`, "i");
+
+    const account = await Account.findOne({
+      $or: [{ username: usernameRegex }, { email: usernameRaw.toLowerCase() }],
+    });
 
     if (!account || !verifyPassword(password, account.passwordHash)) {
       return res.status(401).json({ error: "Invalid username or password" });
     }
 
-    logActivityEvent({
+    await logActivityEvent({
       req,
       eventType: "login",
       account,
       username: account.username,
       metadata: { via: "password" },
-    }).catch(() => {});
+    });
 
     return res.json({
       message: "Login successful",
@@ -1110,10 +882,6 @@ app.post("/api/auth/login", async (req, res) => {
     });
   } catch (err) {
     console.error("Login Error:", err);
-    const msg = String(err?.message || "").toLowerCase();
-    if (msg.includes("timed out") || msg.includes("timeout") || msg.includes("network")) {
-      return res.status(503).json({ error: "Database timeout. Please retry." });
-    }
     return res.status(500).json({ error: "Internal Server Error" });
   }
 });
@@ -1367,242 +1135,6 @@ app.patch("/api/accounts/:username/follow", async (req, res) => {
   } catch (err) {
     console.error("Follow Toggle Error:", err);
     res.status(500).json({ error: "Internal Server Error" });
-  }
-});
-
-
-// =============================
-// COMMUNITIES
-// =============================
-
-app.post("/api/communities", async (req, res) => {
-  try {
-    const { ownerAccountId, ownerUsername, name, visibility } = req.body;
-    const ownerId = String(ownerAccountId || "").trim();
-    const communityName = String(name || "").trim();
-
-    if (!isDbReady()) {
-      return res.status(503).json({ error: "Database unavailable. Please retry shortly." });
-    }
-
-    if (!mongoose.Types.ObjectId.isValid(ownerId)) {
-      return res.status(400).json({ error: "Valid ownerAccountId required" });
-    }
-    if (!communityName) {
-      return res.status(400).json({ error: "Community name required" });
-    }
-
-    const owner = await Account.findById(ownerId, "_id username").lean();
-    if (!owner) return res.status(404).json({ error: "Owner account not found" });
-    const normalizedName = communityName.toLowerCase();
-
-    const existing = await Community.findOne({
-      ownerAccountId: owner._id,
-      normalizedName,
-    }).lean();
-    if (existing) {
-      return res.json({
-        _id: String(existing._id),
-        ownerAccountId: String(existing.ownerAccountId),
-        ownerUsername: existing.ownerUsername,
-        name: existing.name,
-        visibility: existing.visibility,
-        followersCount: Array.isArray(existing.followers) ? existing.followers.length : 0,
-      });
-    }
-
-    const created = await Community.create({
-      ownerAccountId: owner._id,
-      ownerUsername:
-        String(ownerUsername || owner.username || "").trim().toLowerCase() || owner.username,
-      name: communityName,
-      normalizedName,
-      visibility: visibility === "private" ? "private" : "public",
-      followers: [owner._id],
-    });
-
-    await Account.findByIdAndUpdate(owner._id, {
-      $addToSet: { communityFollowing: created._id },
-    });
-
-    return res.status(201).json({
-      _id: String(created._id),
-      ownerAccountId: String(created.ownerAccountId),
-      ownerUsername: created.ownerUsername,
-      name: created.name,
-      visibility: created.visibility,
-      followersCount: 1,
-    });
-  } catch (err) {
-    console.error("Create Community Error:", err?.message || err);
-    if (isTransientDbError(err)) {
-      return res.status(503).json({ error: "Community create temporarily unavailable. Retry shortly." });
-    }
-    return res.status(500).json({ error: "Internal Server Error" });
-  }
-});
-
-app.get("/api/communities/account/:accountId", async (req, res) => {
-  try {
-    const { accountId } = req.params;
-    if (!isDbReady()) {
-      res.set("X-Data-Source", "degraded-db-not-ready");
-      return res.json({ owned: [], followed: [] });
-    }
-    if (!mongoose.Types.ObjectId.isValid(accountId)) {
-      return res.status(400).json({ error: "Invalid account ID" });
-    }
-    const account = await withTimeout(
-      Account.findById(accountId, "_id communityFollowing").maxTimeMS(2500).lean(),
-      3000,
-      "Community account lookup timeout"
-    );
-    if (!account) return res.status(404).json({ error: "Account not found" });
-
-    const [ownedRaw, followedRaw] = await Promise.all([
-      Community.find({ ownerAccountId: account._id })
-        .select("_id ownerAccountId ownerUsername name visibility followers")
-        .sort({ name: 1 })
-        .maxTimeMS(2500)
-        .lean(),
-      Community.find({ _id: { $in: account.communityFollowing || [] } })
-        .select("_id ownerAccountId ownerUsername name visibility followers")
-        .sort({ name: 1 })
-        .maxTimeMS(2500)
-        .lean(),
-    ]);
-
-    const mapCommunity = (c) => ({
-      _id: String(c._id),
-      ownerAccountId: String(c.ownerAccountId),
-      ownerUsername: c.ownerUsername,
-      name: c.name,
-      visibility: c.visibility,
-      followersCount: Array.isArray(c.followers) ? c.followers.length : 0,
-    });
-
-    res.set("Cache-Control", "public, max-age=15");
-    return res.json({
-      owned: ownedRaw.map(mapCommunity),
-      followed: followedRaw.map(mapCommunity),
-    });
-  } catch (err) {
-    console.error("List Communities Error:", err);
-    res.set("X-Data-Source", "degraded-communities-error");
-    return res.json({ owned: [], followed: [] });
-  }
-});
-
-app.post("/api/communities/:id/follow", async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { accountId, username, postId } = req.body;
-
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      return res.status(400).json({ error: "Invalid community ID" });
-    }
-    if (!mongoose.Types.ObjectId.isValid(String(accountId || ""))) {
-      return res.status(400).json({ error: "Valid accountId required" });
-    }
-
-    const community = await Community.findById(id);
-    if (!community) return res.status(404).json({ error: "Community not found" });
-
-    const account = await Account.findById(accountId, "_id username");
-    if (!account) return res.status(404).json({ error: "Account not found" });
-
-    const alreadyFollowing = (community.followers || []).some(
-      (f) => String(f) === String(account._id)
-    );
-    if (alreadyFollowing && !postId) {
-      return res.json({
-        ok: true,
-        status: "already_following",
-        community: {
-          _id: String(community._id),
-          ownerAccountId: String(community.ownerAccountId),
-          ownerUsername: community.ownerUsername,
-          name: community.name,
-          visibility: community.visibility,
-        },
-        linkedPost: null,
-      });
-    }
-
-    if (community.visibility === "private") {
-      const alreadyPending = (community.pendingRequests || []).some(
-        (r) => String(r.accountId) === String(account._id)
-      );
-      if (!alreadyPending) {
-        community.pendingRequests.push({
-          accountId: account._id,
-          username:
-            String(username || account.username || "").trim().toLowerCase() || account.username,
-          postId: mongoose.Types.ObjectId.isValid(String(postId || ""))
-            ? new mongoose.Types.ObjectId(String(postId))
-            : null,
-          createdAt: new Date(),
-        });
-        await community.save();
-      }
-      return res.json({ ok: true, status: "pending_approval" });
-    }
-
-    if (!alreadyFollowing) {
-      await Account.findByIdAndUpdate(account._id, {
-        $addToSet: { communityFollowing: community._id },
-      });
-      await Community.findByIdAndUpdate(community._id, {
-        $addToSet: { followers: account._id },
-      });
-    }
-
-    let linkedPost = null;
-    if (postId && mongoose.Types.ObjectId.isValid(String(postId))) {
-      const post = await Post.findOne({
-        _id: new mongoose.Types.ObjectId(String(postId)),
-        artistId: account._id,
-      });
-      if (post) {
-        const exists = (post.communityTags || []).some(
-          (t) => String(t.communityId) === String(community._id)
-        );
-        if (!exists) {
-          post.communityTags.push({
-            communityId: community._id,
-            name: community.name,
-            visibility: community.visibility,
-            ownerAccountId: community.ownerAccountId,
-          });
-          await post.save();
-        }
-        linkedPost = {
-          _id: String(post._id),
-          communityTags: (post.communityTags || []).map((c) => ({
-            communityId: c.communityId ? String(c.communityId) : "",
-            name: c.name || "",
-            visibility: c.visibility || "public",
-            ownerAccountId: c.ownerAccountId ? String(c.ownerAccountId) : "",
-          })),
-        };
-      }
-    }
-
-    return res.json({
-      ok: true,
-      status: "following",
-      community: {
-        _id: String(community._id),
-        ownerAccountId: String(community.ownerAccountId),
-        ownerUsername: community.ownerUsername,
-        name: community.name,
-        visibility: community.visibility,
-      },
-      linkedPost,
-    });
-  } catch (err) {
-    console.error("Community Follow/Link Error:", err);
-    return res.status(500).json({ error: "Internal Server Error" });
   }
 });
 

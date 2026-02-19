@@ -22,17 +22,6 @@ const postSchema = new mongoose.Schema({
   description: String,
   title:       String,
   tags:        [String],
-  communityTags: {
-    type: [
-      {
-        communityId: { type: mongoose.Schema.Types.ObjectId, ref: "Community", required: true },
-        name: { type: String, required: true },
-        visibility: { type: String, enum: ["public", "private"], default: "public" },
-        ownerAccountId: { type: mongoose.Schema.Types.ObjectId, ref: "Account", required: true },
-      },
-    ],
-    default: [],
-  },
   medium:      String,
   comments: [{
     user:      String,
