@@ -121,7 +121,10 @@ async function ensureIndexes() {
 
 const PORT = process.env.PORT || 3001;
 const MONGODB_URI = process.env.MONGODB_URI;
-const ML_SERVICE_URL = process.env.ML_SERVICE_URL || "http://127.0.0.1:8001";
+const ML_SERVICE_URL_RAW = process.env.ML_SERVICE_URL || "http://127.0.0.1:8001";
+const ML_SERVICE_URL = /^https?:\/\//i.test(ML_SERVICE_URL_RAW)
+  ? ML_SERVICE_URL_RAW
+  : `http://${ML_SERVICE_URL_RAW}`;
 const HF_API_TOKEN = process.env.HF_API_TOKEN;
 const HF_MODEL_URL = "https://router.huggingface.co/hf-inference/models/umm-maybe/AI-image-detector";
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || "loomadmin";
@@ -1492,4 +1495,3 @@ if ((process.env.BEHAVIOR_ANALYSIS_ENABLED || "true").toLowerCase() !== "false")
     );
   }, intervalMs);
 }
-
