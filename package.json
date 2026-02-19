@@ -13,10 +13,12 @@
   },
   "dependencies": {
     "compression": "^1.8.1",
+    "cors": "^2.8.6",
     "d3": "^7.9.0",
     "dotenv": "^17.3.1",
+    "express": "^5.2.1",
     "form-data": "^4.0.5",
-    "mongoose": "^8.10.0",
+    "mongoose": "^8.23.0",
     "react": "^19.2.4",
     "react-google-recaptcha": "^3.1.0",
     "react-icons": "^5.5.0",
