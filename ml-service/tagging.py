@@ -11,6 +11,7 @@ import base64
 import urllib.request
 import torch.nn.functional as F
 import logging
+from threading import Lock
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -26,16 +27,51 @@ app.add_middleware(
 )
 
 device = "cpu"
+MODEL_NAME = "openai/clip-vit-base-patch32"
+model = None
+processor = None
+TEXT_EMBEDDINGS = {}
+INIT_ERROR = None
+INIT_LOCK = Lock()
 
-# -------- MODEL LOADING -------- #
-try:
-    logger.info("Loading CLIP model...")
-    model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(device)
-    processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
-    model.eval()
-except Exception as e:
-    logger.error(f"Model failed to load: {e}")
-    raise RuntimeError(e)
+# -------- MODEL + EMBEDDING INIT -------- #
+def ensure_clip_ready():
+    """
+    Lazily initialize the CLIP model and taxonomy embeddings.
+    This avoids blocking process startup, so the web service can bind its port quickly.
+    """
+    global model, processor, TEXT_EMBEDDINGS, INIT_ERROR
+
+    if model is not None and processor is not None and TEXT_EMBEDDINGS:
+        return True
+
+    with INIT_LOCK:
+        if model is not None and processor is not None and TEXT_EMBEDDINGS:
+            return True
+
+        try:
+            INIT_ERROR = None
+            if model is None or processor is None:
+                logger.info("Loading CLIP model...")
+                model = CLIPModel.from_pretrained(MODEL_NAME).to(device)
+                processor = CLIPProcessor.from_pretrained(MODEL_NAME)
+                model.eval()
+
+            if not TEXT_EMBEDDINGS:
+                logger.info("Pre-computing taxonomy embeddings for Loom...")
+                for category, labels in ART_TAXONOMY.items():
+                    emb = compute_text_embeddings(labels)
+                    if emb is not None:
+                        TEXT_EMBEDDINGS[category] = emb
+                        logger.info(f"Loaded {category}: {emb.shape}")
+                    else:
+                        logger.warning(f"Failed to compute embeddings for category: {category}")
+        except Exception as e:
+            INIT_ERROR = str(e)
+            logger.error(f"CLIP initialization failed: {e}")
+            return False
+
+    return model is not None and processor is not None and bool(TEXT_EMBEDDINGS)
 
 
 # -------- LOOM SYSTEM CONTEXT -------- #
@@ -438,25 +474,15 @@ def build_subject_hints(subject_phrases):
     return hints
 
 
-# -------- PRE-COMPUTE TAXONOMY EMBEDDINGS -------- #
-
-TEXT_EMBEDDINGS = {}
-logger.info("Pre-computing taxonomy embeddings for Loom...")
-for category, labels in ART_TAXONOMY.items():
-    emb = compute_text_embeddings(labels)
-    if emb is not None:
-        TEXT_EMBEDDINGS[category] = emb
-        logger.info(f"Loaded {category}: {emb.shape}")
-    else:
-        logger.warning(f"Failed to compute embeddings for category: {category}")
-
-
 # -------- ANALYZER -------- #
 
 @app.post("/analyze")
 async def analyze(image: UploadFile = File(...)):
-    if not TEXT_EMBEDDINGS:
-        raise HTTPException(status_code=503, detail="Embeddings not initialized.")
+    if not ensure_clip_ready():
+        detail = "Embeddings not initialized."
+        if INIT_ERROR:
+            detail = f"{detail} {INIT_ERROR}"
+        raise HTTPException(status_code=503, detail=detail)
 
     try:
         # 1. Load and convert image
