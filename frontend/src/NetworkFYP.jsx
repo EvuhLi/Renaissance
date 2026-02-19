@@ -4,16 +4,10 @@ import { useForceSimulation } from "./hooks/useForceSimulation";
 import { useArtProtection } from "./hooks/useArtProtection";
 import NetworkCanvas from "./components/NetworkCanvas";
 import PostModal from "./components/PostModal";
-import { getJSONCached } from "./utils/requestCache";
-import loomAboutImage from "./assets/loom_about_me.jpg";
-import weavingImage from "./assets/weaving_loom.jpg";
-import distortedArtImage from "./assets/distorted_art.jpg";
-import collageImage from "./assets/collage.jpg";
-import cfaImage from "./assets/cfa.jpg";
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:3001";
 const INITIAL_VISIBLE_NODES = 28;
-const FETCH_LIMIT = 24;
+const FETCH_LIMIT = 48;
 const LOAD_MORE_STEP = 16;
 const CATEGORY_THRESHOLDS = {
   medium: 0.12,
@@ -32,96 +26,9 @@ const LINK_COLORS = {
   color_palette: "#7F5539",
   aesthetic_features: "#84A98C",
   manual: "#52796F",
-  community_followed: "#2A9D8F",
   tag_overlap: "#2F3E46",
   follower: "#B56576",
 };
-
-const getFypLocalCacheKey = (username) =>
-  `fyp-cache:${String(username || "anon").trim().toLowerCase()}`;
-
-const STARTER_POSTS = [
-  {
-    _id: "starter-loom-1",
-    artistId: "starter-account-1",
-    user: "loom_gallery",
-    title: "Studio Threads",
-    description: "Starter discovery post while your feed warms up.",
-    tags: ["textile", "weaving", "studio"],
-    medium: "textile",
-    url: weavingImage,
-    mlTags: { subject: [{ label: "loom" }], style: [{ label: "craft" }] },
-    likes: 0,
-    likedBy: [],
-    communityTags: [],
-    date: "2025-01-01T00:00:00.000Z",
-    _isStarter: true,
-  },
-  {
-    _id: "starter-loom-2",
-    artistId: "starter-account-2",
-    user: "palette_lab",
-    title: "Color Study",
-    description: "A starter color-focused post for initial graph density.",
-    tags: ["color", "abstract", "study"],
-    medium: "digital",
-    url: collageImage,
-    mlTags: { color_palette: [{ label: "warm tones" }], subject: [{ label: "collage" }] },
-    likes: 0,
-    likedBy: [],
-    communityTags: [],
-    date: "2025-01-02T00:00:00.000Z",
-    _isStarter: true,
-  },
-  {
-    _id: "starter-loom-3",
-    artistId: "starter-account-3",
-    user: "canvas_house",
-    title: "Distorted Forms",
-    description: "Starter expressive work to keep the network populated.",
-    tags: ["expression", "surreal", "form"],
-    medium: "mixed media",
-    url: distortedArtImage,
-    mlTags: { mood: [{ label: "intense" }], style: [{ label: "expressionist" }] },
-    likes: 0,
-    likedBy: [],
-    communityTags: [],
-    date: "2025-01-03T00:00:00.000Z",
-    _isStarter: true,
-  },
-  {
-    _id: "starter-loom-4",
-    artistId: "starter-account-4",
-    user: "archive_room",
-    title: "Loom Notes",
-    description: "Starter post with archival texture and process detail.",
-    tags: ["archive", "texture", "notes"],
-    medium: "drawing",
-    url: loomAboutImage,
-    mlTags: { subject: [{ label: "notes" }], aesthetic_features: [{ label: "grain" }] },
-    likes: 0,
-    likedBy: [],
-    communityTags: [],
-    date: "2025-01-04T00:00:00.000Z",
-    _isStarter: true,
-  },
-  {
-    _id: "starter-loom-5",
-    artistId: "starter-account-5",
-    user: "figure_station",
-    title: "Figure Practice",
-    description: "Starter figurative slot for broader subject coverage.",
-    tags: ["figure", "practice", "gesture"],
-    medium: "painting",
-    url: cfaImage,
-    mlTags: { subject: [{ label: "figure" }], style: [{ label: "academic" }] },
-    likes: 0,
-    likedBy: [],
-    communityTags: [],
-    date: "2025-01-05T00:00:00.000Z",
-    _isStarter: true,
-  },
-];
 
 const NetworkFYP = ({ username }) => {
   const { isProtected } = useArtProtection();
@@ -132,8 +39,6 @@ const NetworkFYP = ({ username }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [followingSet, setFollowingSet] = useState(new Set());
-  const [followedCommunityIds, setFollowedCommunityIds] = useState(new Set());
-  const [includeFollowedCommunities, setIncludeFollowedCommunities] = useState(true);
   const [linkFilters, setLinkFilters] = useState({
     medium: true,
     subject: true,
@@ -142,7 +47,6 @@ const NetworkFYP = ({ username }) => {
     color_palette: true,
     aesthetic_features: true,
     manual: true,
-    community_followed: true,
     tag_overlap: true,
     follower: true,
   });
@@ -160,7 +64,6 @@ const NetworkFYP = ({ username }) => {
   const activeUser = username || localStorage.getItem("username") || "";
   const accountId = localStorage.getItem("accountId") || "";
   const profilePath = accountId ? `/profile/${encodeURIComponent(accountId)}` : "/profile";
-  const fypLocalCacheKey = getFypLocalCacheKey(activeUser);
 
   useEffect(() => {
     const loadFollowing = async () => {
@@ -169,26 +72,13 @@ const NetworkFYP = ({ username }) => {
         return;
       }
       try {
-        const account = await getJSONCached(
-          `${BACKEND_URL}/api/accounts/id/${encodeURIComponent(accountId)}`,
-          { ttlMs: 30000, timeoutMs: 25000, staleOnError: true, staleMaxAgeMs: Infinity }
-        );
+        const res = await fetch(`${BACKEND_URL}/api/accounts/id/${encodeURIComponent(accountId)}`);
+        if (!res.ok) return;
+        const account = await res.json();
         const ids = new Set((account?.following || []).map((id) => String(id)));
         setFollowingSet(ids);
-      } catch (_e) {
-        setFollowingSet((prev) => (prev instanceof Set ? new Set(prev) : new Set()));
-      }
-      try {
-        const communities = await getJSONCached(
-          `${BACKEND_URL}/api/communities/account/${encodeURIComponent(accountId)}`,
-          { ttlMs: 30000, timeoutMs: 25000, staleOnError: true, staleMaxAgeMs: Infinity }
-        );
-        const ids = new Set(
-          (communities?.followed || []).map((c) => String(c?._id || "")).filter(Boolean)
-        );
-        setFollowedCommunityIds(ids);
-      } catch (_e) {
-        setFollowedCommunityIds((prev) => (prev instanceof Set ? new Set(prev) : new Set()));
+      } catch (e) {
+        console.warn("Failed to load following set:", e);
       }
     };
     loadFollowing();
@@ -358,30 +248,6 @@ const NetworkFYP = ({ username }) => {
             type: "follower",
           });
         }
-
-        const aCommunities = new Set(
-          Array.isArray(nodes[i]?.post?.communityTags)
-            ? nodes[i].post.communityTags
-                .map((c) => String(c?.communityId || ""))
-                .filter((id) => id && followedCommunityIds.has(id))
-            : []
-        );
-        const bCommunities = new Set(
-          Array.isArray(nodes[j]?.post?.communityTags)
-            ? nodes[j].post.communityTags
-                .map((c) => String(c?.communityId || ""))
-                .filter((id) => id && followedCommunityIds.has(id))
-            : []
-        );
-        const sharedFollowedCommunity = [...aCommunities].some((id) => bCommunities.has(id));
-        if (sharedFollowedCommunity) {
-          built.push({
-            source: nodes[i],
-            target: nodes[j],
-            strength: 0.82,
-            type: "community_followed",
-          });
-        }
       }
     }
 
@@ -437,7 +303,7 @@ const NetworkFYP = ({ username }) => {
     }
 
     return built;
-  }, [nodes, followingSet, followedCommunityIds]);
+  }, [nodes, followingSet]);
 
   const visibleLinks = useMemo(
     () => links.filter((l) => linkFilters[l.type] !== false),
@@ -453,101 +319,45 @@ const NetworkFYP = ({ username }) => {
       if (activeUser && activeUser !== "null" && activeUser !== "undefined") {
         params.set("username", activeUser);
       }
-      if (includeFollowedCommunities && accountId) {
-        params.set("includeFollowedCommunities", "1");
-        params.set("accountId", accountId);
-      }
 
-      const data = await getJSONCached(`${BACKEND_URL}/api/fyp?${params}`, {
-        ttlMs: 15000,
-        timeoutMs: 25000,
-        staleOnError: true,
-        staleMaxAgeMs: Infinity,
-      });
-      let sourcePosts = Array.isArray(data) ? data : [];
-      if (sourcePosts.length === 0) {
-        const backup = await getJSONCached(`${BACKEND_URL}/api/posts?limit=${limit}`, {
-          ttlMs: 15000,
-          timeoutMs: 25000,
-          staleOnError: true,
-          staleMaxAgeMs: Infinity,
-        }).catch(() => []);
-        sourcePosts = Array.isArray(backup) ? backup : [];
-      }
-      if (sourcePosts.length === 0) {
-        try {
-          const raw = localStorage.getItem(fypLocalCacheKey);
-          const parsed = raw ? JSON.parse(raw) : [];
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            sourcePosts = parsed;
-          }
-        } catch {
-          // ignore local cache parse errors
-        }
-      }
-      if (sourcePosts.length === 0) {
-        sourcePosts = STARTER_POSTS;
-      }
+      const res = await fetch(`${BACKEND_URL}/api/fyp?${params}`);
+      if (!res.ok) throw new Error(`FYP fetch failed: ${res.status}`);
+
+      const data = await res.json();
       // Eager-load image URLs for network nodes
       const postsWithImages = await Promise.all(
-        sourcePosts.map(async (p, idx) => {
-          if (idx >= INITIAL_VISIBLE_NODES + LOAD_MORE_STEP) return p;
+        (Array.isArray(data) ? data : []).map(async (p) => {
           const postId = String(p._id || p.id || "");
           if (!postId) return p;
-          if (typeof p.url === "string" && p.url.trim()) return p;
           try {
-            const imgData = await getJSONCached(`${BACKEND_URL}/api/posts/${postId}/image`, {
-              ttlMs: 5 * 60 * 1000,
-            });
+            const imgRes = await fetch(`${BACKEND_URL}/api/posts/${postId}/image`);
+            if (!imgRes.ok) return p;
+            const imgData = await imgRes.json();
             return { ...p, url: imgData?.url || p.url };
           } catch (e) {
             return p;
           }
         })
       );
-      if (postsWithImages.length > 0) {
-        setAllPosts(postsWithImages);
-        setPosts(postsWithImages.slice(0, INITIAL_VISIBLE_NODES));
-        try {
-          localStorage.setItem(fypLocalCacheKey, JSON.stringify(postsWithImages));
-        } catch {
-          // ignore local storage write errors
-        }
-      } else if (!allPosts.length) {
-        setAllPosts([]);
-        setPosts([]);
-      }
+      setAllPosts(postsWithImages);
+      setPosts(postsWithImages.slice(0, INITIAL_VISIBLE_NODES));
       
       // Mark liked posts
       const liked = {};
-      sourcePosts.forEach((post) => {
+      data.forEach((post) => {
         const postId = String(post._id || post.id);
         if (post.likedBy && activeUser) {
           liked[postId] = post.likedBy.includes(activeUser);
         }
       });
-      setLikedPosts((prev) => ({ ...prev, ...liked }));
+      setLikedPosts(liked);
     } catch (err) {
       console.error("FYP fetch error:", err);
-      if (!allPosts.length) {
-        let restored = false;
-        try {
-          const raw = localStorage.getItem(fypLocalCacheKey);
-          const parsed = raw ? JSON.parse(raw) : [];
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            setAllPosts(parsed);
-            setPosts(parsed.slice(0, INITIAL_VISIBLE_NODES));
-            restored = true;
-          }
-        } catch {
-          // ignore local cache parse errors
-        }
-        if (!restored) setError("Couldn't load your feed right now.");
-      }
+      setError("Couldn't load your feed right now.");
     } finally {
       setLoading(false);
     }
-  }, [activeUser, allPosts.length, includeFollowedCommunities, accountId, fypLocalCacheKey]);
+  }, [activeUser]);
 
   // Initial fetch
   useEffect(() => {
@@ -594,12 +404,11 @@ const NetworkFYP = ({ username }) => {
     const basePost = node?.post;
     if (!basePost) return;
     setSelectedPost(basePost);
-    if (basePost?._isStarter) return;
     const postId = String(basePost._id || basePost.id);
     try {
-      const full = await getJSONCached(`${BACKEND_URL}/api/posts/${postId}/full`, {
-        ttlMs: 20000,
-      });
+      const res = await fetch(`${BACKEND_URL}/api/posts/${postId}/full`);
+      if (!res.ok) return;
+      const full = await res.json();
       setSelectedPost((prev) => ({
         ...prev,
         ...full,
@@ -633,7 +442,6 @@ const NetworkFYP = ({ username }) => {
   const handleComment = useCallback(
     async (text) => {
       if (!selectedPost) return false;
-      if (selectedPost?._isStarter) return false;
       if (!activeUser) {
         navigate("/login");
         return false;
@@ -679,7 +487,6 @@ const NetworkFYP = ({ username }) => {
   // Handle like
   const handleLike = useCallback(async () => {
     if (!selectedPost) return;
-    if (selectedPost?._isStarter) return;
 
     const rawUser = username || localStorage.getItem("username");
     let activeUser;
@@ -858,14 +665,6 @@ const NetworkFYP = ({ username }) => {
 
       <div style={styles.legendPanel}>
         <p style={styles.legendTitle}>Connection Key</p>
-        <label style={styles.legendRow}>
-          <input
-            type="checkbox"
-            checked={includeFollowedCommunities}
-            onChange={(e) => setIncludeFollowedCommunities(e.target.checked)}
-          />
-          <span style={styles.legendLabel}>Include followed communities in FYP</span>
-        </label>
         {Object.entries(LINK_COLORS).map(([type, color]) => (
           <label key={type} style={styles.legendRow}>
             <input

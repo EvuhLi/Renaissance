@@ -7,6 +7,7 @@ const mongoose = require("mongoose");
 const nodeFetch = require("node-fetch");
 const FormData = require("form-data");
 const crypto = require("crypto");
+const path = require("path");
 
 const Post = require("./models/Post");
 const Account = require("./models/Account");
@@ -20,6 +21,7 @@ app.use(cors());
 app.use(compression({ level: 6, threshold: 1024 })); // Gzip responses > 1KB
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
+app.use(express.static(path.join(__dirname, "../frontend/dist")));
 
 function hashPassword(password) {
   const salt = crypto.randomBytes(16).toString("hex");
@@ -47,11 +49,7 @@ function createAdminSessionToken() {
   adminSessions.set(token, Date.now() + ADMIN_SESSION_TTL_MS);
   return token;
 }
-    msg.includes("topology is closed") ||
-    msg.includes("before initial connection is complete") ||
-    msg.includes("buffercommands = false") ||
-    msg.includes("not connected")
-) {
+function isValidAdminSession(token = "") {
   const expiry = adminSessions.get(token);
   if (!expiry) return false;
   if (Date.now() > expiry) {
@@ -136,19 +134,7 @@ const adminSessions = new Map();
 // =============================
 
 if (!MONGODB_URI) {
-  console.error("❌ Missing MOconst fypResponseCache = new Map();
-NGODBfunction getLastCachedFyp() {
-  let latest = null;
-  for (const entry of fypResponseCache.values()) {
-    if (!entry?.data || !Array.isArray(entry.data) || entry.data.length === 0) continue;
-    if (!latest || Number(entry.ts || 0) > Number(latest.ts || 0)) {
-      latest = entry;
-    }
-  }
-  return latest?.data || null;
-}
-
-_URI in .env");
+  console.error("❌ Missing MONGODB_URI in .env");
   process.exit(1);
 }
 
@@ -252,11 +238,9 @@ app.get("/api/accounts/id/:id", async (req, res) => {
   const t0 = Date.now();
   try {
     const { id } = req.params;
-
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ error: "Invalid account ID" });
     }
-
     const account = await Account.findById(id);
 
     if (!account) {
@@ -266,27 +250,19 @@ app.get("/api/accounts/id/:id", async (req, res) => {
     console.log(`[Accounts/ID] ${id}: ${Date.now() - t0}ms`);
     res.json(account);
   } catch (err) {
-    console.error("Get Account By ID Error:", err);
+    console.error("Get Account By ID Error:", err?.message || err);
     res.status(500).json({ error: "Internal Server Error" });
   }
 });
 
 // =============================
 // FYP RECOMMENDATIONS
-/    res.set("X-Data-Source", "degraded-account-id-error");
-    return res.json({
-      _id: req.params.id,
-      username: String(req.query.username || "dev_user"),
-      role: "user",
-      profilePic: "",
-      bio: "",
-      followersCount: 0,  const includeFollowedCommunities =
-    String(req.query.includeFollowedCommunities || "0") === "1";
-  const accountId = String(req.query.accountId || "").trim();
+// =============================
 
-      following: [],
-    });
-h.min(parseInt(req.query.limit) || 12, 30); // Reduced default to 12
+app.get("/api/fyp", async (req, res) => {
+  const t0 = Date.now();
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 12, 30); // Reduced default to 12
     const page = Math.max(parseInt(req.query.page) || 0, 0);
     const skip = page * limit;
 
@@ -310,47 +286,7 @@ h.min(parseInt(req.query.limit) || 12, 30); // Reduced default to 12
       _id: p._id.toString(),
       artistId: p.artistId?.toString(),
       user: p.user,
-      postCategory: p    if (
-      includeFollowedCommunities &&
-      mongoose.Types.ObjectId.isValid(accountId) &&
-      posts.length > 0
-    ) {
-      const account = await Account.findById(accountId, "_id communityFollowing")
-        .maxTimeMS(1500)
-        .lean()
-        .catch(() => null);
-      const followed = Array.isArray(account?.communityFollowing)
-        ? account.communityFollowing.filter((id) =>
-            mongoose.Types.ObjectId.isValid(String(id))
-          )
-        : [];
-      if (followed.length > 0) {
-        const communityPosts = await Post.find(
-          { "communityTags.communityId": { $in: followed } },
-          "_id artistId user postCategory postType title description tags communityTags medium likes likedBy date mlTags url"
-        )
-          .sort({ date: -1 })
-          .limit(limit)
-          .maxTimeMS(2000)
-          .lean()
-          .catch(() => []);
-        if (communityPosts.length > 0) {
-          const merged = [...communityPosts, ...posts];
-          const dedup = [];
-          const seen = new Set();
-          for (const p of merged) {
-            const id = String(p?._id || "");
-            if (!id || seen.has(id)) continue;
-            seen.add(id);
-            dedup.push(p);
-            if (dedup.length >= limit) break;
-          }
-          posts = dedup;
-        }
-      }
-    }
-
-.postCategory || "artwork",
+      postCategory: p.postCategory || "artwork",
       postType: p.postType || "original",
       title: p.title,
       description: p.description,
@@ -368,10 +304,21 @@ h.min(parseInt(req.query.limit) || 12, 30); // Reduced default to 12
     return res.json(serializedPosts);
   } catch (err) {
     console.error("FYP Error:", err.message);
-    res.status(500).json({ error: "Internal Server Err    console.error("FYP Error:", err?.message || err);
-    res.set("X-FYP-Source", "degraded-empty");
-    return res.json([]);
-d url")
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+// Endpoint to fetch image for a specific post
+app.get("/api/posts/:id/image", async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ error: "Invalid post ID" });
+    }
+    
+    const post = await Post.findById(id)
+      .select("_id url")
       .lean()
       .maxTimeMS(2000);
     
@@ -381,31 +328,29 @@ d url")
     
     // Return just the image URL - gzip compression handles the rest
     res.set("Cache-Control", "public, max-age=604800"); // 7 day cache
-    res.j      .select("_id url previewUrl")
-      .lean()
-      .maxTimeMS(2000);
-    
-    if (!post) {
-      return res.status(404).json({ error: "Post not found" });
-    }
-
-    const resolvedUrl = post.url || post.previewUrl || "";
-    if (!resolvedUrl) {
-      return res.status(404).json({ error: "Post image not found" });
-    }
-    
-    // Return just the image URL - gzip compression handles the rest
-    res.set("Cache-Control", "public, max-age=604800"); // 7 day cache
     res.json({
       _id: post._id.toString(),
-      url: resolvedUrl,
- } = req.body;
+      url: post.url,
+    });
+  } catch (err) {
+    console.error("Image fetch error:", err.message);
+    res.status(500).json({ error: "Failed to fetch image" });
+  }
+});
 
-    if (!username || !postId || !type)
+// =============================
+// INTERACTION TRACKING
+// =============================
+
+app.post("/api/interaction", async (req, res) => {
+  try {
+    const { username, postId, type } = req.body;
+    if (!username || !postId || !type) {
       return res.status(400).json({ error: "username, postId, type required" });
+    }
 
     const allPosts = await Post.find({}, "_id").lean();
-    const allPostIds = allPosts.map((p) => p._id.toString());
+    const allPostIds = allPosts.map((p) => String(p._id));
 
     await nodeFetch(`${ML_SERVICE_URL}/recommendation/interaction`, {
       method: "POST",
@@ -418,10 +363,10 @@ d url")
       }),
     });
 
-    res.json({ ok: true });
+    return res.json({ ok: true });
   } catch (err) {
     console.error("Interaction Error:", err.message);
-    res.status(500).json({ error: "Internal Server Error" });
+    return res.status(500).json({ error: "Internal Server Error" });
   }
 });
 
@@ -447,22 +392,18 @@ app.get("/api/posts", async (req, res) => {
 
     const t_query = Date.now();
     const queryBuilder = Post.find(query)
-      .select("_id artistId user previewUrl title description tags communityTags medium postCategory postType likes likedBy date");
+      .select("_id artistId user previewUrl title description tags medium postCategory postType likes likedBy date");
     
     // Use case-insensitive collation if querying by username
     if (query.user) {
       queryBuilder.collation({ locale: "en", strength: 2 });
     }
-    const posts = await withTimeout(
-      queryBuilder
-        .sort({ date: -1 })
-        .skip(skipVal)
-        .limit(limitVal)
-        .maxTimeMS(3000)
-        .lean(),
-      4000,
-      "Posts query timeout"
-    );
+    const posts = await queryBuilder
+      .sort({ date: -1 })
+      .skip(skipVal)
+      .limit(limitVal)
+      .maxTimeMS(8000)
+      .lean();
     console.log(`[Posts] Find query: ${Date.now() - t_query}ms`);
       
     const normalized = posts.map((p) => ({
@@ -473,14 +414,6 @@ app.get("/api/posts", async (req, res) => {
       title: p.title,
       description: p.description,
       tags: p.tags || [],
-      communityTags: Array.isArray(p.communityTags)
-        ? p.communityTags.map((c) => ({
-            communityId: c.communityId ? String(c.communityId) : "",
-            name: c.name || "",
-            visibility: c.visibility || "public",
-            ownerAccountId: c.ownerAccountId ? String(c.ownerAccountId) : "",
-          }))
-        : [],
       medium: p.medium,
       postCategory: p.postCategory || "artwork",
       postType: p.postType || "original",
@@ -493,12 +426,10 @@ app.get("/api/posts", async (req, res) => {
     
     console.log(`[Posts] Total time: ${Date.now() - t0}ms, posts: ${posts.length}`);
     // Return array directly (ProfilePage expects this format)
-    res.set("Cache-Control", "public, max-age=10");
     res.json(normalized);
   } catch (err) {
-    console.error("Get Posts Error:", err?.message || err);
-    res.set("X-Data-Source", "degraded-posts-error");
-    return res.json([]);
+    console.error("Get Posts Error:", err);
+    res.status(500).json({ error: "Internal Server Error" });
   }
 });
 
@@ -514,7 +445,6 @@ app.post("/api/posts", async (req, res) => {
       title,
       description,
       tags,
-      communityTags,
       mlTags,
       medium,
       postType,
@@ -574,7 +504,6 @@ app.post("/api/posts", async (req, res) => {
       title: title?.trim() || "",
       description: description?.trim() || "",
       tags: Array.isArray(tags) ? tags : [],
-      communityTags: normalizeCommunityTags(communityTags, resolvedArtistId),
       mlTags:
         resolvedCategory === "artwork"
           ? (mlTags || {})
@@ -637,19 +566,10 @@ app.get("/api/posts/:id/full", async (req, res) => {
     }
     
     // Return full post with all details
-    res.set("Cache-Control", "public, max-age=10");
     res.json({
       ...post,
       _id: post._id.toString(),
       artistId: post.artistId?.toString(),
-      communityTags: Array.isArray(post.communityTags)
-        ? post.communityTags.map((c) => ({
-            communityId: c.communityId ? String(c.communityId) : "",
-            name: c.name || "",
-            visibility: c.visibility || "public",
-            ownerAccountId: c.ownerAccountId ? String(c.ownerAccountId) : "",
-          }))
-        : [],
       // processSlides and comments included here (only fetched on-demand)
     });
   } catch (err) {
@@ -830,74 +750,6 @@ app.delete("/api/posts/:id", async (req, res) => {
     res.status(500).json({ error: "Internal Server Error" });
   }
 });
-
-// UPDATE POST (OWNER ONLY)
-// =============================
-app.patch("/api/posts/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      return res.status(400).json({ error: "Invalid post ID" });
-    }
-
-    const {
-      actorAccountId,
-      actorUsername,
-      title,
-      description,
-      tags,
-      communityTags,
-    } = req.body || {};
-
-    const post = await Post.findById(id);
-    if (!post) return res.status(404).json({ error: "Post not found" });
-
-    const actorId = String(actorAccountId || "").trim();
-    const actorName = String(actorUsername || "").trim().toLowerCase();
-    const ownerId = String(post.artistId || "");
-    const ownerName = String(post.user || "").trim().toLowerCase();
-
-    const ownsById = mongoose.Types.ObjectId.isValid(actorId) && actorId === ownerId;
-    const ownsByName = Boolean(actorName && actorName === ownerName);
-    if (!ownsById && !ownsByName) {
-      return res.status(403).json({ error: "You can only edit your own posts" });
-    }
-
-    if (typeof title === "string") post.title = title.trim();
-    if (typeof description === "string") post.description = description.trim();
-    if (Array.isArray(tags)) {
-      post.tags = tags
-        .map((t) => String(t || "").trim())
-        .filter(Boolean)
-        .slice(0, 40);
-    }
-    if (Array.isArray(communityTags)) {
-      post.communityTags = normalizeCommunityTags(communityTags, post.artistId);
-    }
-
-    await post.save();
-
-    return res.json({
-      ...post.toObject(),
-      _id: String(post._id),
-      artistId: post.artistId ? String(post.artistId) : "",
-      communityTags: Array.isArray(post.communityTags)
-        ? post.communityTags.map((c) => ({
-            communityId: c.communityId ? String(c.communityId) : "",
-            name: c.name || "",
-            visibility: c.visibility || "public",
-            ownerAccountId: c.ownerAccountId ? String(c.ownerAccountId) : "",
-          }))
-        : [],
-    });
-  } catch (err) {
-    console.error("Update Post Error:", err);
-    return res.status(500).json({ error: "Internal Server Error" });
-  }
-});
-
-// =============================
-
 // =============================
 // AUTH
 // =============================
@@ -962,7 +814,6 @@ app.post("/api/auth/login", async (req, res) => {
   try {
     const usernameRaw = (req.body.username || "").trim();
     const password = req.body.password || "";
-
     if (!usernameRaw || !password) {
       return res.status(400).json({ error: "Username and password are required" });
     }
@@ -1004,15 +855,23 @@ app.post("/api/auth/login", async (req, res) => {
     });
 
     return res.json({
-      mes    // Single fast indexed lookup for auth (avoid multi-query fallback chain).
-    const loginFilter = usernameRaw.includes("@")
-      ? { email: normalizedUsername }
-      : { username: normalizedUsername };
-    const account = await Account.findOne(loginFilter)
-      .select("_id username email role passwordHash")
-      .maxTimeMS(2500)
-      .lean();
-s;
+      message: "Login successful",
+      user: {
+        id: account._id,
+        username: account.username,
+        email: account.email || null,
+        role: account.role || "user",
+      },
+    });
+  } catch (err) {
+    console.error("Login Error:", err);
+    return res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+app.post("/api/posts/:id/comment", async (req, res) => {
+  try {
+    const { id } = req.params;
     const { username, text } = req.body;
 
     if (!username || !text) {
@@ -1025,7 +884,6 @@ s;
       createdAt: new Date(),
     };
 
-    // Add comment and return the full updated post
     const updated = await Post.findByIdAndUpdate(
       id,
       { $push: { comments: comment } },
@@ -1036,17 +894,12 @@ s;
       return res.status(404).json({ error: "Post not found" });
     }
 
-    // Return the full post as plain JSON so frontend gets all fields
     res.json(updated.toObject ? updated.toObject() : updated);
 
-    // Non-blocking operations happen after response
-    // Do these in background without waiting
     (async () => {
       try {
-        // Get post once for tracking (lightweight)
         const post = await Post.findById(id, "date").lean();
-        
-        // Fire ML interaction in background (don't wait for it)
+
         nodeFetch(`${ML_SERVICE_URL}/recommendation/interaction`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1055,14 +908,13 @@ s;
             post_id: String(id),
             interaction_type: "comment",
           }),
-        }).catch(err => console.warn("ML tracking failed:", err.message));
+        }).catch((e) => console.warn("ML tracking failed:", e.message));
 
-        // Log activity in background
         const commentAccount = await Account.findOne(
           { username: new RegExp(`^${escapeRegex(String(username))}$`, "i") },
           "_id username"
         ).lean();
-        
+
         const parentTimestamp = post?.date ? new Date(post.date) : null;
         await logActivityEvent({
           req,
@@ -1076,7 +928,7 @@ s;
           replyTimestamp: comment.createdAt,
           latencyMs: parentTimestamp ? comment.createdAt.getTime() - parentTimestamp.getTime() : null,
           metadata: { textLength: String(text).length },
-        }).catch(err => console.warn("Activity logging failed:", err.message));
+        }).catch((e) => console.warn("Activity logging failed:", e.message));
       } catch (bgErr) {
         console.warn("Background operation error:", bgErr.message);
       }
@@ -1167,45 +1019,47 @@ app.get("/api/accounts/:username", async (req, res) => {
 // FOLLOW / UNFOLLOW
 // =============================
 
+app.patch("/api/accounts/:id/bio", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { bio } = req.body;
+
+    if (!isDbReady()) {
+      return res.status(503).json({ error: "Database unavailable. Please retry shortly." });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ error: "Invalid target account ID" });
+    }
+
+    const updated = await Account.findByIdAndUpdate(
+      id,
+      { bio: bio },
+      { new: true }
+    );
+
+    if (!updated) return res.status(404).json({ error: "Account not found" });
+    res.json(updated);
+  } catch (err) {
+    console.error("Bio Update Error:", err?.message || err);
+    if (isTransientDbError(err)) {
+      return res.status(503).json({ error: "Bio update temporarily unavailable. Retry shortly." });
+    }
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
 app.patch("/api/accounts/:username/follow", async (req, res) => {
   try {
-    const { username } = req.params; // target to be followed/unfollowed
-    const { follower } = req.body; // who is performing the action
+    const { username } = req.params;
+    const { follower } = req.body;
 
     if (!follower || !username) {
       return res.status(400).json({ error: "follower and username required" });
     }
 
-    // Ensure both accounts exist (create follower on demand)
     const target = await Account.findOne({ username });
-    if (app.patch("/api/accounts/:id/bio", async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { bio } = req.body;
-
-    // Check if the ID is valid
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      return res.status(400).json({ error: "Invalid target account ID" });
-    }
-
-    // Update the user's bio in the database
-    const updated = await Account.findByIdAndUpdate(
-      id,
-      { bio: bio },
-      { new: true } // Returns the updated document
-    );
-
-    if (!updated) return res.status(404).json({ error: "Account not found" });
-    
-    // Send the updated user back to the frontend
-    res.json(updated);
-  } catch (err) {
-    console.error("Bio Update Error:", err);
-    res.status(500).json({ error: "Internal Server Error" });
-  }
-});
-
-!target) return res.status(404).json({ error: "Target account not found" });
+    if (!target) return res.status(404).json({ error: "Target account not found" });
 
     const followerAccount = await Account.findOneAndUpdate(
       { username: follower },
@@ -1214,12 +1068,14 @@ app.patch("/api/accounts/:username/follow", async (req, res) => {
     );
 
     const targetId = target._id;
-    const alreadyFollowing = (followerAccount.following || []).some((id) => String(id) === String(targetId));
+    const alreadyFollowing = (followerAccount.following || []).some(
+      (id) => String(id) === String(targetId)
+    );
 
-    let updatedFollower, updatedTarget;
+    let updatedFollower;
+    let updatedTarget;
 
     if (alreadyFollowing) {
-      // unfollow
       updatedFollower = await Account.findByIdAndUpdate(
         followerAccount._id,
         { $pull: { following: targetId } },
@@ -1231,7 +1087,6 @@ app.patch("/api/accounts/:username/follow", async (req, res) => {
         { new: true }
       );
     } else {
-      // follow
       updatedFollower = await Account.findByIdAndUpdate(
         followerAccount._id,
         { $addToSet: { following: targetId } },
@@ -1255,270 +1110,14 @@ app.patch("/api/accounts/:username/follow", async (req, res) => {
       },
     });
 
-    res.json({ target: updatedTarget, follower: updatedFollower, isFollowing: !alreadyFollowing });
+    res.json({
+      target: updatedTarget,
+      follower: updatedFollower,
+      isFollowing: !alreadyFollowing,
+    });
   } catch (err) {
     console.error("Follow Toggle Error:", err);
     res.status(500).json({ error: "Internal Server Error" });
-  }
-});
-
-// =============================
-// CREATE ACCOUNT
-// =============================
-
-app.post("/api/accounts", async (req, res) => {
-  try {
-    const { username, bio, followersCount } = req.body;
-
-    if (!username || !username.trim()) {
-      return res.status(400).json({ error: "Username required" });
-    }
-
-    const existing = await Account.findOne({ username: username.trim() });
-    if (existing) {
-      return res.status(400).json({ error: "Username already exists" });
-    }
-
-    const newAccount = await Account.create({
-      username: username.trim(),
-      profilePic: "",
-      bio: bio || "",
-      followersCount: followersCount || 0,
-      following: [],
-    });
-
-    res.status(201).json(newAccount);
-  } catch (err) {
-    console.error("Create Account Error:", err);
-    res.status(500).json({ error: "Internal Server Error" });
-  }
-});
-
-// =============================
-// ADMIN PORTAL
-// =============================
-
-app.get("/api/admin/accounts", requireAdmin, async (req, res) => {
-  try {
-    const search = String(req.query.search || "").trim();
-    const page = Math.max(1, Number(req.query.page) || 1);
-    const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize) || 25));
-
-    const query = {};
-    if (search) {
-      query.username = new RegExp(escapeRegex(search), "i");
-    }
-
-    const total = await Account.countDocuments(query);
-    const accounts = await Account.find(
-      query,
-      "_id username bio followersCount following botScore behaviorFeatures lastBehaviorComputedAt createdAt"
-    )
-      .sort({ username: 1 })
-      .skip((page - 1) * pageSize)
-      .limit(pageSize)
-      .lean();
-
-    const accountIds = accounts.map((a) => a._id);
-
-    const postStats = await Post.aggregate([
-      { $match: { artistId: { $in: accountIds } } },
-      {
-        $project: {
-          artistId: 1,
-          likes: { $ifNull: ["$likes", 0] },
-          commentsCount: { $size: { $ifNull: ["$comments", []] } },
-        },
-      },
-      {
-        $group: {
-          _id: "$artistId",
-          postsCount: { $sum: 1 },
-          likesReceived: { $sum: "$likes" },
-          commentsReceived: { $sum: "$commentsCount" },
-        },
-      },
-    ]);
-
-    const activityStats = await ActivityLog.aggregate([
-      { $match: { userId: { $in: accountIds } } },
-      {
-        $group: {
-          _id: "$userId",
-          totalEvents: { $sum: 1 },
-          likesGiven: { $sum: { $cond: [{ $eq: ["$eventType", "like"] }, 1, 0] } },
-          commentsMade: { $sum: { $cond: [{ $eq: ["$eventType", "comment_create"] }, 1, 0] } },
-          followsGiven: { $sum: { $cond: [{ $eq: ["$eventType", "follow"] }, 1, 0] } },
-          lastActiveAt: { $max: "$timestamp" },
-        },
-      },
-    ]);
-
-    const postMap = new Map(postStats.map((s) => [String(s._id), s]));
-    const activityMap = new Map(activityStats.map((s) => [String(s._id), s]));
-
-    const items = accounts.map((account) => {
-      const id = String(account._id);
-      const ps = postMap.get(id) || {};
-      const as = activityMap.get(id) || {};
-      const followingCount = Array.isArray(account.following) ? account.following.length : 0;
-      const botProbability = Math.max(
-        0,
-        Math.min(
-          1,
-          Number(account.botScore ?? account.behaviorFeatures?.botScore ?? 0)
-        )
-      );
-
-      return {
-        profile: {
-          id,
-          username: account.username,
-          bio: account.bio || "",
-          followersCount: Number(account.followersCount || 0),
-          followingCount,
-          createdAt: account.createdAt || null,
-          lastBehaviorComputedAt: account.lastBehaviorComputedAt || null,
-        },
-        engagement: {
-          postsCount: Number(ps.postsCount || 0),
-          likesReceived: Number(ps.likesReceived || 0),
-          commentsReceived: Number(ps.commentsReceived || 0),
-          likesGiven: Number(as.likesGiven || 0),
-          commentsMade: Number(as.commentsMade || 0),
-          followsGiven: Number(as.followsGiven || 0),
-          totalEvents: Number(as.totalEvents || 0),
-          lastActiveAt: as.lastActiveAt || null,
-        },
-        bot: {
-          probability: Number(botProbability.toFixed(4)),
-          behaviorFeatures: account.behaviorFeatures || {},
-        },
-      };
-    });
-
-    return res.json({
-      items,
-      page,
-      pageSize,
-      total,
-      totalPages: Math.max(1, Math.ceil(total / pageSize)),
-    });
-  } catch (err) {
-    console.error("Admin list accounts error:", err);
-    return res.status(500).json({ error: "Internal Server Error" });
-  }
-});
-
-app.delete("/api/admin/accounts/:id", requireAdmin, async (req, res) => {
-  try {
-    const { id } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      return res.status(400).json({ error: "Invalid account ID" });
-    }
-
-    const account = await Account.findById(id).lean();
-    if (!account) {
-      return res.status(404).json({ error: "Account not found" });
-    }
-
-    if (String(account.username || "").toLowerCase() === ADMIN_USERNAME.toLowerCase()) {
-      return res.status(403).json({ error: "Cannot delete admin account" });
-    }
-
-    const usernameRegex = new RegExp(`^${escapeRegex(String(account.username || ""))}$`, "i");
-
-    await Post.deleteMany({ artistId: account._id });
-    await Post.updateMany(
-      {},
-      {
-        $pull: {
-          likedBy: { $in: [String(account.username || "").toLowerCase(), String(account.username || "")] },
-          comments: { user: usernameRegex },
-        },
-      }
-    );
-
-    await ActivityLog.deleteMany({
-      $or: [{ userId: account._id }, { username: usernameRegex }],
-    });
-
-    await Account.updateMany(
-      { following: account._id },
-      { $pull: { following: account._id } }
-    );
-
-    await Account.deleteOne({ _id: account._id });
-
-    // Recompute followersCount after relationship cleanup.
-    await Account.updateMany({}, { $set: { followersCount: 0 } });
-    const followerAgg = await Account.aggregate([
-      { $unwind: "$following" },
-      { $group: { _id: "$following", count: { $sum: 1 } } },
-    ]);
-    if (followerAgg.length) {
-      await Account.bulkWrite(
-        followerAgg.map((r) => ({
-          updateOne: {
-            filter: { _id: r._id },
-            update: { $set: { followersCount: r.count } },
-          },
-        }))
-      );
-    }
-
-    return res.json({ ok: true, deletedAccountId: id, username: account.username });
-  } catch (err) {
-    console.error("Admin delete account error:", err);
-    return res.status(500).json({ error: "Internal Server Error" });
-  }
-});
-
-app.post("/api/behavior/recompute", async (req, res) => {
-  try {
-    const limit = Math.min(Number(req.body?.limit) || 200, 5000);
-    const result = await runBehaviorAnalysisBatch(limit);
-    res.json({ ok: true, ...result, ranAt: new Date().toISOString() });
-  } catch (err) {
-    console.error("Behavior recompute error:", err);
-    res.status(500).json({ error: "Internal Server Error" });
-  }
-});
-
-// =============================
-// START SERVER
-// =============================
-
-app.listen(PORT, () =>
-  console.log(`🚀 Backend running on http://localhost:${PORT}`)
-);
-
-// Public search users endpoint
-app.get("/api/search/users", async (req, res) => {
-  try {
-    const search = String(req.query.search || "").trim();
-    const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 50));
-
-    const query = { role: { $ne: "admin" } }; // Exclude admins
-    if (search) {
-      query.username = new RegExp(escapeRegex(search), "i");
-    }
-
-    const users = await Account.find(query, "_id username bio followersCount createdAt")
-      .sort({ username: 1 })
-      .limit(limit)
-      .lean();
-
-    res.json(users);
-  } catch (err) {
-    console.error("User search error:", err);
-    res.status(500).json({ error: "Search failed" });
-  }
-});
- decision });
-  } catch (err) {
-    console.error("Community request moderation error:", err);
-    return res.status(500).json({ error: "Internal Server Error" });
   }
 });
 
@@ -1804,66 +1403,16 @@ app.post("/api/behavior/recompute", async (req, res) => {
 // START SERVER
 // =============================
 
+// SPA fallback: serve index.html for any non-API routes
+app.get("*", (req, res) => {
+  res.sendFile(path.join(__dirname, "../frontend/dist/index.html"));
+});
+
 app.listen(PORT, () =>
   console.log(`🚀 Backend running on http://localhost:${PORT}`)
 );
 
-// Public s    const ownedCommunities = await Community.find({ ownerAccountId: account._id });
-    for (const community of ownedCommunities) {
-      const remainingFollowers = (community.followers || []).filter(
-        (fid) => String(fid) !== String(account._id)
-      );
-      const nextOwnerId = remainingFollowers.length ? remainingFollowers[0] : null;
-      if (!nextOwnerId) {
-        await Community.deleteOne({ _id: community._id });
-        await Account.updateMany(
-          { communityFollowing: community._id },
-          { $pull: { communityFollowing: community._id } }
-        );
-        await Post.updateMany(
-          {},
-          { $pull: { communityTags: { communityId: community._id } } }
-        );
-        continue;
-      }
-      const nextOwner = await Account.findById(nextOwnerId, "_id username").lean();
-      if (!nextOwner) continue;
-      await Community.updateOne(
-        { _id: community._id },
-        {
-          $set: {
-            ownerAccountId: nextOwner._id,
-            ownerUsername: String(nextOwner.username || "").toLowerCase(),
-            followers: remainingFollowers,
-          },
-          $pull: {
-            pendingRequests: { requesterAccountId: account._id },
-          },
-        }
-      );
-      await Post.updateMany(
-        { "communityTags.communityId": community._id },
-        {
-          $set: {
-            "communityTags.$[elem].ownerAccountId": nextOwner._id,
-          },
-        },
-        {
-          arrayFilters: [{ "elem.communityId": community._id }],
-        }
-      );
-    }
-
-    await Community.updateMany(
-      {},
-      {
-        $pull: {
-          followers: account._id,
-          pendingRequests: { requesterAccountId: account._id },
-        },
-      }
-    );
-earch users endpoint
+// Public search users endpoint
 app.get("/api/search/users", async (req, res) => {
   try {
     const search = String(req.query.search || "").trim();
