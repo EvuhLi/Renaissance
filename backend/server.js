@@ -21,6 +21,10 @@ app.use(compression({ level: 6, threshold: 1024 })); // Gzip responses > 1KB
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
+// Serve frontend static files
+const path = require("path");
+app.use(express.static(path.join(__dirname, "../frontend/dist")));
+
 function hashPassword(password) {
   const salt = crypto.randomBytes(16).toString("hex");
   const derived = crypto.scryptSync(password, salt, 64).toString("hex");
@@ -1356,6 +1360,11 @@ app.post("/api/behavior/recompute", async (req, res) => {
 // =============================
 // START SERVER
 // =============================
+
+// SPA fallback: serve index.html for any non-API routes
+app.get("*", (req, res) => {
+  res.sendFile(path.join(__dirname, "../frontend/dist/index.html"));
+});
 
 app.listen(PORT, () =>
   console.log(`🚀 Backend running on http://localhost:${PORT}`)
