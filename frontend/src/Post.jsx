@@ -1,10 +1,6 @@
 import React, { useEffect, useRef, useState, memo, useMemo } from "react";
 import { Link } from "react-router-dom";
 import { GiShirtButton } from "react-icons/gi";
-import { FiEdit2 } from "react-icons/fi";
-import { getJSONCached, invalidateCacheByPrefix } from "./utils/requestCache";
-
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:3001";
 
 const drawImageToCanvas = (canvas, img, fit = "cover") => {
   if (!canvas || !img) return;
@@ -198,9 +194,7 @@ const Post = ({
   likedPosts,
   toggleButton,
   addComment,
-  deletePost,
-  updatePost,
-  onUpdatePost,
+  deletePost
 }) => {
   // Local state to prevent rapid-fire clicking
   const [isProcessing, setIsProcessing] = useState(false);
@@ -254,62 +248,7 @@ const Post = ({
   const [commentsPage, setCommentsPage] = useState(0);
   const [loadedComments, setLoadedComments] = useState({});
   const [commentsLoading, setCommentsLoading] = useState(false);
-  const [communityActionBusy, setCommunityActionBusy] = useState({});
-  const [followedCommunityIds, setFollowedCommunityIds] = useState(new Set());
-  const [followPromptCommunity, setFollowPromptCommunity] = useState(null);
-  const [isEditOpen, setIsEditOpen] = useState(false);
-  const [editingPost, setEditingPost] = useState(null);
-  const [editTitle, setEditTitle] = useState("");
-  const [editDescription, setEditDescription] = useState("");
-  const [editTags, setEditTags] = useState("");
-  const [editCommunities, setEditCommunities] = useState([]);
-  const [editSelectedCommunityIds, setEditSelectedCommunityIds] = useState([]);
-  const [isSavingEdit, setIsSavingEdit] = useState(false);
   const COMMENTS_PER_PAGE = 15;
-  const viewerAccountId = String(user?._id?.$oid || user?._id || user?.id || "");
-  const viewerUsername = String(user?.username || "").trim().toLowerCase();
-  const viewerUserId = viewerAccountId;
-  const viewerName = viewerUsername;
-
-  const isPostOwner = (post) => {
-    if (!post) return false;
-    const postArtistId = String(
-      post.artistId?.$oid || post.artistId || (typeof post.user === "object" ? post.user?._id : "") || ""
-    );
-    const postUsername = String(typeof post.user === "object" ? post.user?.username : post.user || "")
-      .trim()
-      .toLowerCase();
-    return Boolean(
-      (viewerUserId && postArtistId && viewerUserId === postArtistId) ||
-      (viewerName && postUsername && viewerName === postUsername)
-    );
-  };
-
-  useEffect(() => {
-    let cancelled = false;
-    const loadFollowedCommunities = async () => {
-      if (!viewerAccountId) return;
-      try {
-        const data = await getJSONCached(
-          `${BACKEND_URL}/api/communities/account/${encodeURIComponent(viewerAccountId)}`,
-          { ttlMs: 15000 }
-        );
-        if (cancelled) return;
-        const ids = new Set(
-          [...(data?.owned || []), ...(data?.followed || [])]
-            .map((c) => String(c?._id || ""))
-            .filter(Boolean)
-        );
-        setFollowedCommunityIds(ids);
-      } catch {
-        // ignore
-      }
-    };
-    loadFollowedCommunities();
-    return () => {
-      cancelled = true;
-    };
-  }, [viewerAccountId, selectedPost?._id]);
 
   // Fetch comments on-demand from the backend
   const fetchComments = async (postId, page = 0) => {
@@ -404,118 +343,6 @@ const Post = ({
     }
   };
 
-  const handleCommunityFollow = async (communityTag) => {
-    if (!communityTag?.communityId) return;
-    if (!viewerAccountId) {
-      alert("Please log in again to continue.");
-      return;
-    }
-    const key = `${communityTag.communityId}:follow`;
-    if (communityActionBusy[key]) return;
-    setCommunityActionBusy((prev) => ({ ...prev, [key]: true }));
-
-    try {
-      const response = await fetch(
-        `${BACKEND_URL}/api/communities/${encodeURIComponent(communityTag.communityId)}/follow`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            accountId: viewerAccountId,
-            username: viewerUsername,
-          }),
-        }
-      );
-      const result = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(result?.error || "Community action failed");
-      }
-      invalidateCacheByPrefix(`${BACKEND_URL}/api/communities/account/`);
-      setFollowedCommunityIds((prev) => new Set([...prev, String(communityTag.communityId)]));
-
-    } catch (err) {
-      console.error("Community action failed:", err);
-      alert(err.message || "Community action failed");
-    } finally {
-      setCommunityActionBusy((prev) => ({ ...prev, [key]: false }));
-    }
-  };
-
-  const openEditForPost = async (post) => {
-    if (!isPostOwner(post)) return;
-    setEditingPost(post);
-    setEditTitle(String(post?.title || ""));
-    setEditDescription(String(post?.description || ""));
-    setEditTags((post?.tags || []).join(", "));
-    setEditSelectedCommunityIds(
-      (post?.communityTags || []).map((c) => String(c.communityId || "")).filter(Boolean)
-    );
-    setIsEditOpen(true);
-
-    if (!viewerAccountId) {
-      setEditCommunities([]);
-      return;
-    }
-    try {
-      const data = await getJSONCached(
-        `${BACKEND_URL}/api/communities/account/${encodeURIComponent(viewerAccountId)}`,
-        { ttlMs: 30000 }
-      );
-      const merged = [...(data?.owned || []), ...(data?.followed || [])];
-      const seen = new Set();
-      const dedup = [];
-      for (const c of merged) {
-        const id = String(c?._id || "");
-        if (!id || seen.has(id)) continue;
-        seen.add(id);
-        dedup.push({
-          _id: id,
-          ownerAccountId: String(c.ownerAccountId || ""),
-          name: String(c.name || ""),
-          visibility: c.visibility === "private" ? "private" : "public",
-        });
-      }
-      setEditCommunities(dedup);
-    } catch {
-      setEditCommunities([]);
-    }
-  };
-
-  const savePostEdit = async () => {
-    if (!editingPost || typeof updatePost !== "function") return;
-    setIsSavingEdit(true);
-    try {
-      const cleanTags = editTags
-        .split(/[,#]/)
-        .map((t) => t.trim())
-        .filter(Boolean);
-      const communityTags = editSelectedCommunityIds
-        .map((id) => {
-          const c = editCommunities.find((x) => x._id === id);
-          if (!c) return null;
-          return {
-            communityId: c._id,
-            name: c.name,
-            visibility: c.visibility || "public",
-            ownerAccountId: c.ownerAccountId,
-          };
-        })
-        .filter(Boolean);
-      const result = await updatePost(String(editingPost._id || editingPost.id), {
-        title: editTitle,
-        description: editDescription,
-        tags: cleanTags,
-        communityTags,
-      });
-      if (result) {
-        setIsEditOpen(false);
-        setEditingPost(null);
-      }
-    } finally {
-      setIsSavingEdit(false);
-    }
-  };
-
   return (
     <>
       <div style={styles.grid} className="post-grid">
@@ -526,19 +353,6 @@ const Post = ({
             className="post-grid-item"
             onClick={() => setSelectedPost(post)}
           >
-            {isPostOwner(post) && (
-              <button
-                type="button"
-                style={styles.gridEditBtn}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  openEditForPost(post);
-                }}
-                title="Edit post"
-              >
-                <FiEdit2 />
-              </button>
-            )}
             <div style={styles.artworkWrapper}>
               <CanvasImage
                 src={post.url}
@@ -685,40 +499,6 @@ const Post = ({
                 {selectedPost.description && (
                   <div style={styles.description}>{selectedPost.description}</div>
                 )}
-                {Array.isArray(selectedPost.communityTags) && selectedPost.communityTags.length > 0 && (
-                  <div style={styles.communityTagSection}>
-                    <div style={styles.communityTitle}>Communities</div>
-                    <div style={styles.communityTagList}>
-                      {selectedPost.communityTags.map((community) => {
-                        const communityId = String(community.communityId || "");
-                        const followBusy = Boolean(communityActionBusy[`${communityId}:follow`]);
-                        const isOwnerCommunity =
-                          String(community.ownerAccountId || "") === String(viewerAccountId || "");
-                        const isFollowing = isOwnerCommunity || followedCommunityIds.has(communityId);
-                        return (
-                          <div key={communityId} style={styles.communityTagItem}>
-                            <button
-                              type="button"
-                              style={styles.communityNameBtn}
-                              onClick={() => setFollowPromptCommunity(community)}
-                            >
-                              {community.name}
-                              {community.visibility === "private" ? " [lock]" : ""}
-                            </button>
-                            <button
-                              type="button"
-                              style={styles.communityActionBtn}
-                              disabled={followBusy || isFollowing}
-                              onClick={() => handleCommunityFollow(community)}
-                            >
-                              {isFollowing ? "Following" : followBusy ? "Following..." : "Follow"}
-                            </button>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
 
                 {/* ---- TAG SECTION ---- */}
                 {(() => {
@@ -836,98 +616,6 @@ const Post = ({
               );
             })()}
         </div>
-        </div>
-      )}
-
-      {followPromptCommunity && (
-        <div style={styles.promptOverlay} onClick={() => setFollowPromptCommunity(null)}>
-          <div style={styles.promptCard} onClick={(e) => e.stopPropagation()}>
-            <div style={styles.promptTitle}>Follow community?</div>
-            <div style={styles.promptText}>
-              {followPromptCommunity.name}
-              {followPromptCommunity.visibility === "private" ? " [lock]" : ""}
-            </div>
-            <div style={styles.promptActions}>
-              <button style={styles.promptBtnSecondary} onClick={() => setFollowPromptCommunity(null)}>
-                Cancel
-              </button>
-              <button
-                style={styles.promptBtnPrimary}
-                onClick={async () => {
-                  await handleCommunityFollow(followPromptCommunity);
-                  setFollowPromptCommunity(null);
-                }}
-              >
-                Follow
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {isEditOpen && editingPost && (
-        <div style={styles.promptOverlay} onClick={() => setIsEditOpen(false)}>
-          <div style={styles.editCard} onClick={(e) => e.stopPropagation()}>
-            <div style={styles.promptTitle}>Edit Post</div>
-            <input
-              type="text"
-              value={editTitle}
-              onChange={(e) => setEditTitle(e.target.value)}
-              style={styles.editInput}
-              placeholder="Title"
-            />
-            <textarea
-              value={editDescription}
-              onChange={(e) => setEditDescription(e.target.value)}
-              style={styles.editTextarea}
-              placeholder="Description"
-            />
-            <input
-              type="text"
-              value={editTags}
-              onChange={(e) => setEditTags(e.target.value)}
-              style={styles.editInput}
-              placeholder="Tags (comma separated)"
-            />
-            <div style={styles.editCommunityLabel}>Communities</div>
-            <div style={styles.editCommunityList}>
-              {editCommunities.map((c) => (
-                <label key={c._id} style={styles.editCommunityChip}>
-                  <input
-                    type="checkbox"
-                    checked={editSelectedCommunityIds.includes(c._id)}
-                    onChange={(e) => {
-                      setEditSelectedCommunityIds((prev) =>
-                        e.target.checked
-                          ? [...new Set([...prev, c._id])]
-                          : prev.filter((id) => id !== c._id)
-                      );
-                    }}
-                  />
-                  <span>
-                    {c.name}
-                    {c.visibility === "private" ? " [lock]" : ""}
-                  </span>
-                </label>
-              ))}
-            </div>
-            <div style={styles.promptActions}>
-              <button
-                style={styles.promptBtnSecondary}
-                onClick={() => setIsEditOpen(false)}
-                disabled={isSavingEdit}
-              >
-                Cancel
-              </button>
-              <button
-                style={styles.promptBtnPrimary}
-                onClick={savePostEdit}
-                disabled={isSavingEdit}
-              >
-                {isSavingEdit ? "Saving..." : "Save"}
-              </button>
-            </div>
-          </div>
         </div>
       )}
     </>
@@ -1078,160 +766,6 @@ const styles = {
     fontSize: "14px", 
     color: "#555",
     lineHeight: "1.5",
-  },
-  gridEditBtn: {
-    position: "absolute",
-    top: "8px",
-    right: "8px",
-    zIndex: 20,
-    border: "1px solid rgba(45, 27, 27, 0.22)",
-    background: "rgba(255,255,255,0.92)",
-    color: "#2D1B1B",
-    borderRadius: "999px",
-    padding: "3px 9px",
-    fontSize: "11px",
-    fontWeight: "700",
-    cursor: "pointer",
-  },
-  communityTagSection: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "8px",
-  },
-  communityTitle: {
-    fontSize: "11px",
-    fontWeight: "700",
-    color: "#6B705C",
-    textTransform: "uppercase",
-    letterSpacing: "0.06em",
-  },
-  communityTagList: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "6px",
-  },
-  communityTagItem: {
-    display: "flex",
-    alignItems: "center",
-    gap: "8px",
-    flexWrap: "wrap",
-  },
-  communityNameBtn: {
-    fontSize: "12px",
-    color: "#2D1B1B",
-    backgroundColor: "rgba(107, 112, 92, 0.10)",
-    border: "1px solid rgba(107, 112, 92, 0.2)",
-    padding: "3px 10px",
-    borderRadius: "999px",
-    fontWeight: "600",
-    cursor: "pointer",
-  },
-  communityActionBtn: {
-    border: "1px solid #A5A58D",
-    background: "#fff",
-    color: "#6B705C",
-    borderRadius: "999px",
-    padding: "4px 10px",
-    fontSize: "11px",
-    cursor: "pointer",
-    fontWeight: "600",
-  },
-  promptOverlay: {
-    position: "fixed",
-    inset: 0,
-    background: "rgba(0,0,0,0.45)",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    zIndex: 1200,
-  },
-  promptCard: {
-    width: "320px",
-    background: "#fff",
-    borderRadius: "12px",
-    padding: "16px",
-    boxShadow: "0 20px 40px rgba(0,0,0,0.2)",
-    display: "flex",
-    flexDirection: "column",
-    gap: "12px",
-  },
-  editCard: {
-    width: "520px",
-    maxWidth: "92vw",
-    background: "#fff",
-    borderRadius: "12px",
-    padding: "16px",
-    boxShadow: "0 20px 40px rgba(0,0,0,0.2)",
-    display: "flex",
-    flexDirection: "column",
-    gap: "10px",
-  },
-  promptTitle: {
-    fontSize: "16px",
-    fontWeight: "700",
-    color: "#2D1B1B",
-  },
-  promptText: {
-    fontSize: "14px",
-    color: "#5A4A43",
-  },
-  promptActions: {
-    display: "flex",
-    justifyContent: "flex-end",
-    gap: "8px",
-  },
-  promptBtnSecondary: {
-    border: "1px solid #ddd",
-    background: "#fff",
-    color: "#4A4A4A",
-    borderRadius: "8px",
-    padding: "8px 12px",
-    cursor: "pointer",
-  },
-  promptBtnPrimary: {
-    border: "none",
-    background: "#A63D3D",
-    color: "#fff",
-    borderRadius: "8px",
-    padding: "8px 12px",
-    cursor: "pointer",
-    fontWeight: "700",
-  },
-  editInput: {
-    border: "1px solid #ddd",
-    borderRadius: "8px",
-    padding: "10px",
-    fontSize: "14px",
-  },
-  editTextarea: {
-    border: "1px solid #ddd",
-    borderRadius: "8px",
-    padding: "10px",
-    fontSize: "14px",
-    minHeight: "90px",
-    resize: "vertical",
-  },
-  editCommunityLabel: {
-    fontSize: "12px",
-    fontWeight: "700",
-    color: "#6B705C",
-    textTransform: "uppercase",
-    letterSpacing: "0.05em",
-  },
-  editCommunityList: {
-    display: "flex",
-    flexWrap: "wrap",
-    gap: "8px",
-  },
-  editCommunityChip: {
-    display: "inline-flex",
-    alignItems: "center",
-    gap: "6px",
-    border: "1px solid #D9CDBF",
-    borderRadius: "999px",
-    padding: "4px 10px",
-    fontSize: "12px",
-    background: "#fff",
   },
   tagSection: { 
     display: "flex", 

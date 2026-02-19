@@ -1,7 +1,6 @@
 import React, { useState, useRef, useEffect } from "react";
 import { useParams } from "react-router-dom";
 import Post from "./Post";
-import { getJSONCached, invalidateCacheByPrefix } from "./utils/requestCache";
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:3001";
 
@@ -137,12 +136,6 @@ const ProfilePage = () => {
   const [newImageFile, setNewImageFile] = useState(null);
   const [newProcessFiles, setNewProcessFiles] = useState([]);
   const [newTitle, setNewTitle] = useState("");
-  const [availableCommunities, setAvailableCommunities] = useState([]);
-  const [selectedCommunityIds, setSelectedCommunityIds] = useState([]);
-  const [newCommunityName, setNewCommunityName] = useState("");
-  const [newCommunityVisibility, setNewCommunityVisibility] = useState("public");
-  const [isLoadingCommunities, setIsLoadingCommunities] = useState(false);
-  const [isCreatingCommunity, setIsCreatingCommunity] = useState(false);
   const [newAccountUsername, setNewAccountUsername] = useState("");
   const [newAccountBio, setNewAccountBio] = useState("");
   const [newAccountFollowers, setNewAccountFollowers] = useState("");
@@ -151,19 +144,9 @@ const ProfilePage = () => {
   const [accountError, setAccountError] = useState("");
   const [isTogglingFollow, setIsTogglingFollow] = useState(false);
   const [user, setUser] = useState(null);
-  const [viewer, setViewer] = useState(() => {
-    try {
-      const raw = localStorage.getItem("viewerSnapshot");
-      if (!raw) return null;
-      const parsed = JSON.parse(raw);
-      return parsed && typeof parsed === "object" ? parsed : null;
-    } catch {
-      return null;
-    }
-  });
+  const [viewer, setViewer] = useState(null);
   const [posts, setPosts] = useState([]);
   const [isPostsLoading, setIsPostsLoading] = useState(true);
-  const [isProfileLoading, setIsProfileLoading] = useState(true);
   const [isBioModalOpen, setIsBioModalOpen] = useState(false);
   const [bioEditValue, setBioEditValue] = useState("");
   const [isUpdatingBio, setIsUpdatingBio] = useState(false);
@@ -284,7 +267,6 @@ const ProfilePage = () => {
   });
   
   useEffect(() => {
-    let cancelled = false;
     if (!resolvedArtistId && storedUsername) {
       setUser((prev) => prev || defaultUser);
     } else {
@@ -292,7 +274,6 @@ const ProfilePage = () => {
     }
     setProfileError("");
     setIsPostsLoading(true);
-    setIsProfileLoading(true);
 
     // Fast path: hydrate from cache if fresh
     try {
@@ -305,7 +286,6 @@ const ProfilePage = () => {
             setPosts(cached.posts);
             setIsPostsLoading(false);
           }
-          setIsProfileLoading(false);
         }
       }
     } catch (e) {
@@ -327,49 +307,42 @@ const ProfilePage = () => {
           .trim()
           .toLowerCase();
         const initialPostsUrl = buildPostsUrl(initialArtistId, initialUsername);
-
-        // 1) Fast lane: render posts first.
-        const initialPostsPromise = getJSONCached(initialPostsUrl, {
-          ttlMs: 30000,
-          timeoutMs: 7000,
-        }).catch(() => []);
+        const initialPostsPromise = fetch(initialPostsUrl)
+          .then((res) => (res.ok ? res.json() : []))
+          .catch(() => []);
 
         // PARALLEL FETCH: Fetch account and viewer in parallel to reduce waterfall latency
         const accountUrl = activeArtistId
           ? `${BACKEND_URL}/api/accounts/id/${encodeURIComponent(activeArtistId)}`
           : `${BACKEND_URL}/api/accounts/${encodeURIComponent(defaultUser.username)}`;
-        const isOwnProfileFastPath = Boolean(
-          activeArtistId &&
-            storedAccountId &&
-            String(activeArtistId) === String(storedAccountId) &&
-            viewer
-        );
+        
+        const viewerFetchPromise = viewer
+          ? Promise.resolve(null) // Already have viewer, skip fetch
+          : fetch(`${BACKEND_URL}/api/accounts/${encodeURIComponent(defaultUser.username)}`)
+              .then((res) => res.ok ? res.json() : null)
+              .catch((err) => {
+                console.warn("Could not load default viewer account:", err);
+                return null;
+              });
 
-        const viewerFetchPromise = Promise.resolve(viewer || null);
-
-        // 2) Background lane: hydrate profile/account metadata
-        const accountPromise = isOwnProfileFastPath
-          ? Promise.resolve(viewer)
-          : getJSONCached(accountUrl, { ttlMs: 60000, timeoutMs: 8000 }).catch(() => null);
+        // Fetch both account and viewer requests in parallel
+        const accountPromise = fetch(accountUrl);
         const viewerPromise = viewerFetchPromise;
 
-        initialPostsPromise.then((initialPosts) => {
-          if (cancelled) return;
-          if (Array.isArray(initialPosts)) {
-            setPosts(initialPosts);
-            setIsPostsLoading(false);
-          }
-        });
+        const initialPosts = await initialPostsPromise;
+        if (Array.isArray(initialPosts)) {
+          setPosts(initialPosts);
+          setIsPostsLoading(false);
+        }
 
-        const [accountData, viewerData] = await Promise.all([
+        const [accountRes, viewerData] = await Promise.all([
           accountPromise,
           viewerPromise,
         ]);
-        if (cancelled) return;
 
         let loadedUser = null;
-        if (accountData) {
-          loadedUser = accountData;
+        if (accountRes.ok) {
+          loadedUser = await accountRes.json();
           setUser(loadedUser);
         } else {
           setProfileError("Could not load artist profile.");
@@ -377,14 +350,8 @@ const ProfilePage = () => {
 
         if (viewerData) {
           setViewer(viewerData);
-          try {
-            localStorage.setItem("viewerSnapshot", JSON.stringify(viewerData));
-          } catch {
-            // ignore storage errors
-          }
           console.log("Loaded default viewer account:", viewerData);
         }
-        setIsProfileLoading(false);
 
         const targetArtistId = normalizeId(loadedUser?._id || activeArtistId);
         const targetUsername = String(
@@ -395,17 +362,18 @@ const ProfilePage = () => {
 
         const reqSeq = ++postsReqSeqRef.current;
         const finalPostsUrl = buildPostsUrl(targetArtistId, targetUsername);
-        const initialPosts = await initialPostsPromise;
         let postsData = initialPosts;
 
         if (finalPostsUrl !== initialPostsUrl) {
-          postsData = await getJSONCached(finalPostsUrl, { ttlMs: 30000 }).catch((err) => {
-            console.error("Failed to fetch posts:", err?.message || err);
-            return [];
-          });
+          const postsRes = await fetch(finalPostsUrl);
+          if (!postsRes.ok) {
+            console.error("Failed to fetch posts:", postsRes.status, postsRes.statusText);
+            if (reqSeq === postsReqSeqRef.current) setIsPostsLoading(false);
+            return;
+          }
+          postsData = await postsRes.json();
         }
         if (reqSeq !== postsReqSeqRef.current) return;
-        if (cancelled) return;
         const normalizedPosts = Array.isArray(postsData) ? postsData : [];
         setPosts(normalizedPosts);
         setIsPostsLoading(false);
@@ -423,14 +391,10 @@ const ProfilePage = () => {
         console.error(e);
         setProfileError("Could not load artist profile.");
         setIsPostsLoading(false);
-        setIsProfileLoading(false);
       }
     };
 
     loadAccountAndPosts();
-    return () => {
-      cancelled = true;
-    };
   }, [artistId, resolvedArtistId, activeArtistId]);
 
   useEffect(() => {
@@ -510,7 +474,6 @@ const ProfilePage = () => {
         setViewer((prev) =>
           normalizeId(prev?._id) === normalizeId(updated?._id) ? updated : prev
         );
-        invalidateCacheByPrefix(`${BACKEND_URL}/api/accounts/`);
         setIsProfileUploadOpen(false);
         setNewProfilePicFile(null);
       } catch (err) {
@@ -563,7 +526,6 @@ const ProfilePage = () => {
       // 2. Update the state so the new bio shows up immediately
       setUser(updatedUser);
       setViewer(updatedUser);
-      invalidateCacheByPrefix(`${BACKEND_URL}/api/accounts/`);
       
       // 3. Clear the cache so it doesn't revert on refresh
       localStorage.removeItem(`profile-cache:${userIdToUpdate}`);
@@ -680,26 +642,6 @@ const ProfilePage = () => {
         ]),
       ];
 
-      // Keep tagging resilient even when user leaves tag input blank.
-      if (flatTags.length < 3) {
-        const fallbackPool = [
-          newTitle.trim(),
-          ...selectedCommunityIds
-            .map((id) => availableCommunities.find((c) => c._id === id)?.name || "")
-            .filter(Boolean),
-          "art",
-          "creative",
-          "loom",
-          "untagged",
-        ]
-          .map((t) => String(t || "").trim().toLowerCase())
-          .filter(Boolean);
-        for (const t of fallbackPool) {
-          if (!flatTags.includes(t)) flatTags.push(t);
-          if (flatTags.length >= 3) break;
-        }
-      }
-
       setScanStatus("Saving post...");
       const payload = {
         user: normalizedCurrentUsername,
@@ -712,18 +654,6 @@ const ProfilePage = () => {
         title: newTitle.trim(),
         description: newDescription.trim(),
         tags: flatTags,
-        communityTags: selectedCommunityIds
-          .map((communityId) => {
-            const found = availableCommunities.find((c) => c._id === communityId);
-            if (!found) return null;
-            return {
-              communityId: found._id,
-              name: found.name,
-              visibility: found.visibility || "public",
-              ownerAccountId: found.ownerAccountId,
-            };
-          })
-          .filter(Boolean),
         mlTags: mergedMlTags,
         date: new Date().toISOString(),
       };
@@ -745,17 +675,12 @@ const ProfilePage = () => {
       const saved = { ...savedPost, _id: normalizeId(savedPost._id) };
       setPosts((prev) => [saved, ...prev]);
       setLikedPosts((prev) => ({ ...prev, [normalizeId(savedPost._id)]: false }));
-      invalidateCacheByPrefix(`${BACKEND_URL}/api/posts`);
-      invalidateCacheByPrefix(`${BACKEND_URL}/api/fyp`);
       setIsNewPostOpen(false);
       setNewDescription("");
       setNewTags("");
       setNewTitle("");
       setNewImageFile(null);
       setNewProcessFiles([]);
-      setSelectedCommunityIds([]);
-      setNewCommunityName("");
-      setNewCommunityVisibility("public");
     } catch (error) {
       console.error("Create Post Error:", error);
       alert("Error creating post. Check console for details.");
@@ -821,88 +746,6 @@ const ProfilePage = () => {
       ))
   );
 
-  const refreshCommunities = async () => {
-    if (!currentUserId) return;
-    setIsLoadingCommunities(true);
-    try {
-      const data = await getJSONCached(
-        `${BACKEND_URL}/api/communities/account/${encodeURIComponent(currentUserId)}`,
-        { ttlMs: 30000, timeoutMs: 25000, staleOnError: true, staleMaxAgeMs: Infinity }
-      );
-      const all = [...(data?.owned || []), ...(data?.followed || [])];
-      const dedup = [];
-      const seen = new Set();
-      for (const c of all) {
-        const id = String(c?._id || "");
-        if (!id || seen.has(id)) continue;
-        seen.add(id);
-        dedup.push({
-          _id: id,
-          ownerAccountId: String(c.ownerAccountId || ""),
-          ownerUsername: String(c.ownerUsername || ""),
-          name: String(c.name || ""),
-          visibility: c.visibility === "private" ? "private" : "public",
-        });
-      }
-      setAvailableCommunities(dedup);
-    } catch (err) {
-      console.warn("Load communities deferred:", err?.message || err);
-    } finally {
-      setIsLoadingCommunities(false);
-    }
-  };
-
-  const handleCreateCommunity = async () => {
-    const name = newCommunityName.trim();
-    if (!name || !currentUserId) return;
-    setIsCreatingCommunity(true);
-    try {
-      const res = await fetch(`${BACKEND_URL}/api/communities`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ownerAccountId: currentUserId,
-          ownerUsername: currentUsername,
-          name,
-          visibility: newCommunityVisibility,
-        }),
-      });
-      if (res.status === 404) {
-        alert("Community service is not available yet. Restart backend to load new routes.");
-        return;
-      }
-      if (!res.ok) throw new Error("Failed to create community");
-      const created = await res.json();
-      const normalized = {
-        _id: String(created._id || ""),
-        ownerAccountId: String(created.ownerAccountId || currentUserId),
-        ownerUsername: String(created.ownerUsername || currentUsername),
-        name: String(created.name || name),
-        visibility: created.visibility === "private" ? "private" : "public",
-      };
-      setAvailableCommunities((prev) => {
-        if (prev.some((c) => c._id === normalized._id)) return prev;
-        return [normalized, ...prev];
-      });
-      setSelectedCommunityIds((prev) =>
-        prev.includes(normalized._id) ? prev : [...prev, normalized._id]
-      );
-      invalidateCacheByPrefix(`${BACKEND_URL}/api/communities/account/`);
-      setNewCommunityName("");
-      setNewCommunityVisibility("public");
-    } catch (err) {
-      console.error("Create community failed:", err);
-      alert("Could not create community.");
-    } finally {
-      setIsCreatingCommunity(false);
-    }
-  };
-
-  useEffect(() => {
-    if (!isOwnProfile || !currentUserId) return;
-    refreshCommunities();
-  }, [isOwnProfile, currentUserId]);
-
   useEffect(() => {
     if (!followCacheKey) return;
     try {
@@ -933,7 +776,6 @@ const ProfilePage = () => {
       const result = await resp.json();
       if (result.target) setUser(result.target);
       if (result.follower) setViewer(result.follower);
-      invalidateCacheByPrefix(`${BACKEND_URL}/api/accounts/`);
       if (followCacheKey) {
         setCachedFollowState(Boolean(result.isFollowing));
         try {
@@ -963,44 +805,9 @@ const ProfilePage = () => {
       
       // 2. Remove it from the UI without refreshing the page
       setPosts((prevPosts) => prevPosts.filter((post) => String(post._id || post.id) !== postId));
-      invalidateCacheByPrefix(`${BACKEND_URL}/api/posts`);
-      invalidateCacheByPrefix(`${BACKEND_URL}/api/fyp`);
       
     } catch (error) {
       console.error("Failed to delete post:", error);
-    }
-  };
-
-  const handleUpdatePost = async (postId, updates) => {
-    try {
-      const response = await fetch(`${BACKEND_URL}/api/posts/${encodeURIComponent(postId)}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...updates,
-          actorAccountId: normalizeId(currentUser?._id) || "",
-          actorUsername: String(currentUser?.username || "").trim().toLowerCase(),
-        }),
-      });
-      const result = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(result?.error || "Failed to update post");
-      }
-
-      const pid = normalizeId(result._id || postId);
-      setPosts((prev) =>
-        prev.map((p) => (normalizeId(p._id || p.id) === pid ? { ...p, ...result } : p))
-      );
-      setSelectedPost((prev) =>
-        prev && normalizeId(prev._id || prev.id) === pid ? { ...prev, ...result } : prev
-      );
-      invalidateCacheByPrefix(`${BACKEND_URL}/api/posts`);
-      invalidateCacheByPrefix(`${BACKEND_URL}/api/fyp`);
-      return result;
-    } catch (err) {
-      console.error("Update post failed:", err);
-      alert(err.message || "Could not update post.");
-      return null;
     }
   };
 
@@ -1009,11 +816,6 @@ const ProfilePage = () => {
       <style>
         {`
             @import url('https://fonts.googleapis.com/css2?family=Caveat:wght@400;700&family=Playfair+Display:ital,wght@0,400;0,600;1,400&family=Lato:wght@300;400;700&display=swap');
-
-            @keyframes shimmer {
-                0% { background-position: 200% 0; }
-                100% { background-position: -200% 0; }
-            }
 
             .gallery-wrapper > .post-grid {
                 display: grid !important;
@@ -1088,11 +890,9 @@ const ProfilePage = () => {
           <div style={styles.profileInfo}>
             <div style={styles.infoTop}>
               <h2 style={styles.artistName}>
-                {isProfileLoading && !user ? (
-                  <span style={styles.skeletonName} />
-                ) : (
-                  (user && user.username) || defaultUser.username
-                )}
+                {activeArtistId && !user && !profileError
+                  ? "Loading..."
+                  : (user && user.username) || defaultUser.username}
               </h2>
               {isOwnProfileOptimistic ? (
                 <button
@@ -1126,10 +926,10 @@ const ProfilePage = () => {
                 <strong>{isPostsLoading ? "..." : visiblePosts.length}</strong> drawings
               </span>
               <span style={styles.statItem}>
-                <strong>{isProfileLoading ? "..." : user?.followersCount ?? 0}</strong> followers
+                <strong>{user?.followersCount ?? 0}</strong> followers
               </span>
               <span style={styles.statItem}>
-                <strong>{isProfileLoading ? "..." : (user?.following || []).length}</strong> following
+                <strong>{(user?.following || []).length}</strong> following
               </span>
             </div>
 
@@ -1151,13 +951,7 @@ const ProfilePage = () => {
                   </button>
                 )}
               </div>
-              <p style={styles.bioText}>
-                {isProfileLoading && !user ? (
-                  <span style={styles.skeletonText}>Loading profile...</span>
-                ) : (
-                  user?.bio || defaultUser.bio
-                )}
-              </p>
+              <p style={styles.bioText}>{user?.bio || defaultUser.bio}</p>
             </div>
 
             {profileError && (
@@ -1215,17 +1009,6 @@ const ProfilePage = () => {
                   return null;
                 }
               }}
-              updatePost={handleUpdatePost}
-              onUpdatePost={(updatedPost) => {
-                const pid = normalizeId(updatedPost?._id || updatedPost?.id);
-                if (!pid) return;
-                setPosts((prev) =>
-                  prev.map((p) => (normalizeId(p._id || p.id) === pid ? { ...p, ...updatedPost } : p))
-                );
-                setSelectedPost((prev) =>
-                  prev && normalizeId(prev._id || prev.id) === pid ? { ...prev, ...updatedPost } : prev
-                );
-              }}
             />
           )}
 
@@ -1242,169 +1025,101 @@ const ProfilePage = () => {
               </button>
             </div>
             <div style={styles.modalBody}>
-              <div style={styles.uploadLayout}>
-                <div style={styles.uploadLeftColumn}>
-                  <div style={styles.dropZone} onClick={() => fileInputRef.current.click()}>
-                    {newImageFile ? (
-                      <img
-                        src={URL.createObjectURL(newImageFile)}
-                        style={styles.previewImg}
-                        alt="Preview"
-                      />
-                    ) : (
-                      <p style={{ color: "#888" }}>
-                        Click to select artwork image
-                      </p>
-                    )}
-                  </div>
-                  <div style={styles.dropZone} onClick={() => processInputRef.current.click()}>
-                    <p style={{ color: "#888", margin: 0 }}>
-                      {newProcessFiles.length
-                        ? `${newProcessFiles.length} process photo(s) selected (optional)`
-                        : "Add process photos/slides (optional)"}
-                    </p>
-                  </div>
-                  {newProcessFiles.length > 0 && (
-                    <>
-                      <div style={styles.processPreviewRow}>
-                        {newProcessFiles.map((file, idx) => (
-                          <div key={`${file.name}-${idx}`} style={styles.processPreviewItem}>
-                            <img
-                              src={URL.createObjectURL(file)}
-                              alt={`Process ${idx + 1}`}
-                              style={styles.processPreviewImg}
-                            />
-                            <button
-                              type="button"
-                              style={styles.removeProcessBtn}
-                              onClick={() => handleRemoveProcessFile(idx)}
-                            >
-                              x
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                      <div style={styles.processActions}>
-                        <button
-                          type="button"
-                          style={styles.secondaryBtnMini}
-                          onClick={() => processInputRef.current?.click()}
-                        >
-                          Add More
-                        </button>
-                        <button
-                          type="button"
-                          style={styles.secondaryBtnMini}
-                          onClick={handleClearProcessFiles}
-                        >
-                          Clear All
-                        </button>
-                      </div>
-                    </>
-                  )}
-                  <input
-                    type="file"
-                    ref={processInputRef}
-                    style={{ display: "none" }}
-                    onChange={handleProcessFilesChange}
-                    accept="image/*"
-                    multiple
+              <div style={styles.dropZone} onClick={() => fileInputRef.current.click()}>
+                {newImageFile ? (
+                  <img
+                    src={URL.createObjectURL(newImageFile)}
+                    style={styles.previewImg}
+                    alt="Preview"
                   />
-                </div>
-
-                <div style={styles.uploadRightColumn}>
-                  <input
-                    type="text"
-                    value={newTitle}
-                    onChange={(e) => setNewTitle(e.target.value)}
-                    style={styles.modalInput}
-                    placeholder="Title of piece..."
-                  />
-                  <textarea
-                    value={newDescription}
-                    onChange={(e) => setNewDescription(e.target.value)}
-                    style={styles.modalTextarea}
-                    placeholder="The story behind this..."
-                    rows={3}
-                  />
-                  <input
-                    type="text"
-                    value={newTags}
-                    onChange={(e) => setNewTags(e.target.value)}
-                    style={styles.modalInput}
-                    placeholder="Tags (e.g. #oil, #portrait)"
-                  />
-                  <div style={styles.communitySection}>
-                    <div style={styles.communitySectionHeader}>Communities</div>
-                    <div style={styles.communityCreateRow}>
-                      <input
-                        type="text"
-                        value={newCommunityName}
-                        onChange={(e) => setNewCommunityName(e.target.value)}
-                        style={{ ...styles.modalInput, margin: 0 }}
-                        placeholder="Create a community name"
-                      />
-                      <select
-                        value={newCommunityVisibility}
-                        onChange={(e) => setNewCommunityVisibility(e.target.value)}
-                        style={styles.communitySelect}
-                      >
-                        <option value="public">Public</option>
-                        <option value="private">Private</option>
-                      </select>
-                      <button
-                        type="button"
-                        style={styles.secondaryBtnMini}
-                        onClick={handleCreateCommunity}
-                        disabled={isCreatingCommunity || !newCommunityName.trim()}
-                      >
-                        {isCreatingCommunity ? "Creating..." : "Create"}
-                      </button>
-                    </div>
-                    <div style={styles.communityChipRow}>
-                      {isLoadingCommunities && (
-                        <span style={styles.communityMuted}>Loading communities...</span>
-                      )}
-                      {!isLoadingCommunities && availableCommunities.length === 0 && (
-                        <span style={styles.communityMuted}>No communities yet</span>
-                      )}
-                      {availableCommunities.map((community) => {
-                        const checked = selectedCommunityIds.includes(community._id);
-                        return (
-                          <label key={community._id} style={styles.communityChip}>
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={(e) => {
-                                setSelectedCommunityIds((prev) => {
-                                  if (e.target.checked) {
-                                    return prev.includes(community._id)
-                                      ? prev
-                                      : [...prev, community._id];
-                                  }
-                                  return prev.filter((id) => id !== community._id);
-                                });
-                              }}
-                            />
-                            <span>
-                              {community.name}
-                              {community.visibility === "private" ? " [lock]" : ""}
-                            </span>
-                          </label>
-                        );
-                      })}
-                    </div>
-                  </div>
-                  {newImageFile && (
-                    <p style={styles.aiNote}>
-                      Loom AI check + protection runs on artwork and process photos. Only artwork is auto-tagged.
-                    </p>
-                  )}
-                  {isScanning && scanStatus && (
-                    <p style={styles.scanStatus}>{scanStatus}</p>
-                  )}
-                </div>
+                ) : (
+                  <p style={{ color: "#888" }}>
+                    Click to select artwork image
+                  </p>
+                )}
               </div>
+              <div style={styles.dropZone} onClick={() => processInputRef.current.click()}>
+                <p style={{ color: "#888", margin: 0 }}>
+                  {newProcessFiles.length
+                    ? `${newProcessFiles.length} process photo(s) selected (optional)`
+                    : "Add process photos/slides (optional)"}
+                </p>
+              </div>
+              {newProcessFiles.length > 0 && (
+                <>
+                  <div style={styles.processPreviewRow}>
+                    {newProcessFiles.map((file, idx) => (
+                      <div key={`${file.name}-${idx}`} style={styles.processPreviewItem}>
+                        <img
+                          src={URL.createObjectURL(file)}
+                          alt={`Process ${idx + 1}`}
+                          style={styles.processPreviewImg}
+                        />
+                        <button
+                          type="button"
+                          style={styles.removeProcessBtn}
+                          onClick={() => handleRemoveProcessFile(idx)}
+                        >
+                          x
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={styles.processActions}>
+                    <button
+                      type="button"
+                      style={styles.secondaryBtnMini}
+                      onClick={() => processInputRef.current?.click()}
+                    >
+                      Add More
+                    </button>
+                    <button
+                      type="button"
+                      style={styles.secondaryBtnMini}
+                      onClick={handleClearProcessFiles}
+                    >
+                      Clear All
+                    </button>
+                  </div>
+                </>
+              )}
+              <input
+                type="file"
+                ref={processInputRef}
+                style={{ display: "none" }}
+                onChange={handleProcessFilesChange}
+                accept="image/*"
+                multiple
+              />
+              <input
+                type="text"
+                value={newTitle}
+                onChange={(e) => setNewTitle(e.target.value)}
+                style={styles.modalInput}
+                placeholder="Title of piece..."
+              />
+              <textarea
+                value={newDescription}
+                onChange={(e) => setNewDescription(e.target.value)}
+                style={styles.modalTextarea}
+                placeholder="The story behind this..."
+                rows={3}
+              />
+              <input
+                type="text"
+                value={newTags}
+                onChange={(e) => setNewTags(e.target.value)}
+                style={styles.modalInput}
+                placeholder="Tags (e.g. #oil, #portrait)"
+              />
+              {newImageFile && (
+                <p style={styles.aiNote}>
+                  Loom AI check + protection runs on artwork and process photos. Only artwork is auto-tagged.
+                </p>
+              )}
+              {isScanning && scanStatus && (
+                <p style={styles.scanStatus}>{scanStatus}</p>
+              )}
             </div>
             <div style={styles.modalFooter}>
               <button
@@ -1696,15 +1411,6 @@ const styles = {
     color: "#333",
     margin: 0,
   },
-  skeletonName: {
-    display: "inline-block",
-    width: "190px",
-    height: "40px",
-    borderRadius: "8px",
-    background: "linear-gradient(90deg, #e6dfd2 25%, #f1ece2 50%, #e6dfd2 75%)",
-    backgroundSize: "200% 100%",
-    animation: "shimmer 1.4s infinite",
-  },
   primaryBtn: {
     backgroundColor: "#A5A58D",
     color: "#fff",
@@ -1759,16 +1465,6 @@ const styles = {
     color: "#555",
     lineHeight: "1.6",
   },
-  skeletonText: {
-    display: "inline-block",
-    width: "240px",
-    maxWidth: "100%",
-    height: "18px",
-    borderRadius: "6px",
-    background: "linear-gradient(90deg, #e6dfd2 25%, #f1ece2 50%, #e6dfd2 75%)",
-    backgroundSize: "200% 100%",
-    animation: "shimmer 1.4s infinite",
-  },
   signature: {
     display: "block",
     marginTop: "15px",
@@ -1820,7 +1516,7 @@ const styles = {
   },
   modalCard: {
     backgroundColor: "#fff",
-    width: "900px",
+    width: "500px",
     maxWidth: "90%",
     borderRadius: "4px",
     boxShadow: "0 20px 50px rgba(0,0,0,0.2)",
@@ -1835,27 +1531,7 @@ const styles = {
   },
   modalTitle: { fontFamily: "'Playfair Display', serif", margin: 0 },
   closeBtn: { background: "none", border: "none", fontSize: "20px", cursor: "pointer" },
-  modalBody: {
-    padding: "24px",
-    maxHeight: "75vh",
-    overflowY: "auto",
-  },
-  uploadLayout: {
-    display: "grid",
-    gridTemplateColumns: "minmax(260px, 1fr) minmax(320px, 1.3fr)",
-    gap: "18px",
-    alignItems: "start",
-  },
-  uploadLeftColumn: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "12px",
-  },
-  uploadRightColumn: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "12px",
-  },
+  modalBody: { padding: "30px", display: "flex", flexDirection: "column", gap: "15px" },
   modalInput: {
     padding: "12px",
     border: "1px solid #ddd",
@@ -1939,52 +1615,6 @@ const styles = {
     padding: "6px 12px",
     fontSize: "12px",
     cursor: "pointer",
-  },
-  communitySection: {
-    border: "1px solid #E1D8CC",
-    borderRadius: "8px",
-    padding: "12px",
-    background: "#FFFCF9",
-    display: "flex",
-    flexDirection: "column",
-    gap: "10px",
-  },
-  communitySectionHeader: {
-    fontSize: "13px",
-    fontWeight: "700",
-    color: "#6B705C",
-  },
-  communityCreateRow: {
-    display: "grid",
-    gridTemplateColumns: "1fr auto auto",
-    gap: "8px",
-    alignItems: "center",
-  },
-  communitySelect: {
-    border: "1px solid #ddd",
-    borderRadius: "4px",
-    padding: "10px 8px",
-    background: "#fff",
-    fontFamily: "'Lato', sans-serif",
-  },
-  communityChipRow: {
-    display: "flex",
-    flexWrap: "wrap",
-    gap: "8px",
-  },
-  communityChip: {
-    display: "inline-flex",
-    alignItems: "center",
-    gap: "6px",
-    border: "1px solid #D9CDBF",
-    borderRadius: "999px",
-    padding: "4px 10px",
-    fontSize: "12px",
-    background: "#fff",
-  },
-  communityMuted: {
-    fontSize: "12px",
-    color: "#9A8F84",
   },
   modalFooter: {
     padding: "20px",
