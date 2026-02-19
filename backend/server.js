@@ -1727,8 +1727,3 @@ if ((process.env.BEHAVIOR_ANALYSIS_ENABLED || "true").toLowerCase() !== "false")
   }, intervalMs);
 }
 
-// SPA fallback: serve index.html for any non-API routes
-app.use((req, res) => {
-  res.sendFile(path.join(__dirname, "../frontend/dist/index.html"));
-});
-
