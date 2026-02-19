@@ -92,8 +92,9 @@ This will start:
 ### Testing the App
 
 1. Open http://localhost:5174 in your browser
-2. Sign up for a new account
-3. Try uploading art, searching users, and exploring the network feed
+2. Open loom-ejg3.onrender.com for the deployed website (closes if inactive)
+3. Sign up for a new account
+4. Try uploading art, searching users, and exploring the network feed
 
 ## Project Structure
 
