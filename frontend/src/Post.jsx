@@ -469,11 +469,18 @@ const Post = ({
                     return (
                       <button 
                         style={styles.deleteBtn}
-                        onClick={async () => {
+                        onClick={(e) => {
+                          e.stopPropagation(); // Prevents the click from bleeding through
+                          
                           if (window.confirm("Are you sure you want to delete this artwork?")) {
                             const postId = String(selectedPost._id || selectedPost.id);
-                            await deletePost(postId);
-                            setSelectedPost(null); // Close the modal after deleting
+                            
+                            // 1. Close the modal IMMEDIATELY for a smooth user experience
+                            setSelectedPost(null); 
+                            
+                            // 2. Fire off the delete function in the background 
+                            // (Notice we removed 'await' so it doesn't freeze the screen)
+                            deletePost(postId); 
                           }
                         }}
                       >
