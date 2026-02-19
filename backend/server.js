@@ -1015,6 +1015,33 @@ app.patch("/api/accounts/:id/profile-pic", async (req, res) => {
   }
 });
 
+app.patch("/api/accounts/:id/bio", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { bio } = req.body;
+
+    // Check if the ID is valid
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ error: "Invalid target account ID" });
+    }
+
+    // Update the user's bio in the database
+    const updated = await Account.findByIdAndUpdate(
+      id,
+      { bio: bio },
+      { new: true } // Returns the updated document
+    );
+
+    if (!updated) return res.status(404).json({ error: "Account not found" });
+    
+    // Send the updated user back to the frontend
+    res.json(updated);
+  } catch (err) {
+    console.error("Bio Update Error:", err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
 app.get("/api/accounts/:username", async (req, res) => {
   const t0 = Date.now();
   try {

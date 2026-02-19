@@ -501,22 +501,36 @@ const ProfilePage = () => {
     }
     setIsUpdatingBio(true);
     try {
-      const response = await fetch(`${BACKEND_URL}/api/accounts`, {
+      // 1. We must target the specific user by their ID
+      const userIdToUpdate = currentUser?._id?.$oid || currentUser?._id || currentUser?.id;
+      
+      if (!userIdToUpdate) {
+        throw new Error("Could not find user ID to update.");
+      }
+
+      const response = await fetch(`${BACKEND_URL}/api/accounts/${userIdToUpdate}/bio`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          username: currentUser?.username,
           bio: bioEditValue,
-          followersCount: user?.followersCount || 0,
         }),
       });
+
       if (!response.ok) {
         const errData = await response.json().catch(() => ({}));
         throw new Error(errData.error || "Failed to update bio");
       }
+
       const updatedUser = await response.json();
+      
+      // 2. Update the state so the new bio shows up immediately
       setUser(updatedUser);
       setViewer(updatedUser);
+      
+      // 3. Clear the cache so it doesn't revert on refresh
+      localStorage.removeItem(`profile-cache:${userIdToUpdate}`);
+      localStorage.removeItem(`profile-cache:${currentUser?.username?.toLowerCase()}`);
+      
       handleCloseBioModal();
     } catch (err) {
       console.error("Bio update failed:", err);
