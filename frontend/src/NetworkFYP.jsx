@@ -368,9 +368,26 @@ const NetworkFYP = ({ username }) => {
     setScale(newScale);
   };
 
-  // Handle node click - open modal
-  const handleNodeClick = (node) => {
-    setSelectedPost(node.post);
+  // Handle node click - open modal with full post details
+  const handleNodeClick = async (node) => {
+    const basePost = node?.post;
+    if (!basePost) return;
+    setSelectedPost(basePost);
+    const postId = String(basePost._id || basePost.id);
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/posts/${postId}/full`);
+      if (!res.ok) return;
+      const full = await res.json();
+      setSelectedPost((prev) => ({
+        ...prev,
+        ...full,
+        _id: String(full._id || postId),
+        artistId: full.artistId ? String(full.artistId) : prev?.artistId,
+        comments: Array.isArray(full.comments) ? full.comments : prev?.comments,
+      }));
+    } catch (err) {
+      console.warn("Failed to load post details:", err?.message || err);
+    }
   };
 
   // Record interaction with backend
