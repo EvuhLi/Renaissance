@@ -134,7 +134,7 @@ const NetworkFYP = ({ username }) => {
 
   // Force simulation hook - use actual canvas size
   const { nodes } = useForceSimulation(filteredPosts, canvasSize.width, canvasSize.height);
-
+  
   const links = useMemo(() => {
     if (!nodes.length) return [];
     const relaxedSmallFeed = nodes.length <= 8;
@@ -394,10 +394,31 @@ const NetworkFYP = ({ username }) => {
   }, [scale, pan, checkBoundsAndLoadMore]);
 
   // Handle pan/zoom updates
-  const handlePanZoom = ({ pan: newPan, scale: newScale }) => {
-    setPan(newPan);
-    setScale(newScale);
-  };
+  // 1. Replace your old handlePanZoom with this smarter version
+  const handlePanZoom = useCallback(({ pan: newPan, scale: newScale, type, event }) => {
+    if (type === 'wheel' && event) {
+      const e = event;
+      const zoomIntensity = 0.05; // Adjust for "coolness" - lower is smoother
+      const delta = e.deltaY > 0 ? -zoomIntensity : zoomIntensity;
+      
+      // Calculate next scale with bounds
+      const nextScale = Math.min(Math.max(scale + delta, 0.1), 4);
+
+      // COOL MATH: Zoom towards the mouse cursor instead of the corner
+      const mouseX = e.clientX;
+      const mouseY = e.clientY;
+
+      const newPanX = mouseX - (mouseX - pan.x) * (nextScale / scale);
+      const newPanY = mouseY - (mouseY - pan.y) * (nextScale / scale);
+
+      setPan({ x: newPanX, y: newPanY });
+      setScale(nextScale);
+    } else {
+      // Normal panning (dragging)
+      setPan(newPan);
+      setScale(newScale);
+    }
+  }, [pan, scale]);
 
   // Handle node click - open modal with full post details
   const handleNodeClick = async (node) => {

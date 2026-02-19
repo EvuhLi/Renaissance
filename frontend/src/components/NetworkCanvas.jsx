@@ -19,6 +19,22 @@ const NetworkCanvas = ({
   const [hoveredNodeId, setHoveredNodeId] = useState(null);
   const imageCacheRef = useRef(new Map());
 
+  // Helper to calculate parallax position for a node
+  const getParallaxPos = (node, currentPan) => {
+    // Generate a consistent depth based on the node's ID (range: 0.6 to 1.4)
+    // 1.0 is the "middle" ground.
+    const depth = 0.6 + ((parseInt(String(node.id).slice(-2), 16) || 0) % 80) / 100;
+    
+    // Parallax math: (depth - 1) determines the relative shift.
+    // Close objects (depth > 1) move faster than the pan.
+    // Far objects (depth < 1) move slower.
+    return {
+      x: node.x + (currentPan.x * (depth - 1)) / scale,
+      y: node.y + (currentPan.y * (depth - 1)) / scale,
+      depth
+    };
+  };
+
   const toWorld = (screenX, screenY) => {
     const cx = width / 2;
     const cy = height / 2;
@@ -28,21 +44,20 @@ const NetworkCanvas = ({
     };
   };
 
-  // Set up non-passive wheel listener
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
     const handleWheel = (e) => {
       e.preventDefault();
-      const zoomFactor = e.deltaY > 0 ? 0.92 : 1.08;
-      const newScale = Math.max(0.5, Math.min(3, scale * zoomFactor));
+      const zoomIntensity = 0.08;
+      const zoomFactor = e.deltaY > 0 ? (1 - zoomIntensity) : (1 + zoomIntensity);
+      const newScale = Math.max(0.3, Math.min(4, scale * zoomFactor));
 
       const rect = canvas.getBoundingClientRect();
       const pointerX = e.clientX - rect.left;
       const pointerY = e.clientY - rect.top;
 
-      // Zoom around cursor so posts (not background) scale as expected.
       const cx = width / 2;
       const cy = height / 2;
       const before = {
@@ -54,10 +69,7 @@ const NetworkCanvas = ({
         y: pointerY - cy - (before.y - cy) * newScale,
       };
 
-      onPanZoom?.({
-        pan: newPan,
-        scale: newScale,
-      });
+      onPanZoom?.({ pan: newPan, scale: newScale });
     };
 
     canvas.addEventListener("wheel", handleWheel, { passive: false });
@@ -75,162 +87,158 @@ const NetworkCanvas = ({
     });
   }, [nodes]);
 
-  // Draw the network
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !nodes || nodes.length === 0) {
-      return;
-    }
+    if (!canvas || !nodes || nodes.length === 0) return;
 
     const ctx = canvas.getContext("2d");
-    if (!ctx) {
-      return;
-    }
+    if (!ctx) return;
 
-    // Set canvas resolution for crisp rendering
     const dpr = window.devicePixelRatio || 1;
     canvas.width = width * dpr;
     canvas.height = height * dpr;
     ctx.scale(dpr, dpr);
 
-    // Clear canvas
     ctx.fillStyle = "#E8E4D9";
     ctx.fillRect(0, 0, width, height);
 
-    // Apply pan and zoom
     ctx.save();
+    // Center the camera
     ctx.translate(width / 2 + pan.x, height / 2 + pan.y);
     ctx.scale(scale, scale);
     ctx.translate(-width / 2, -height / 2);
 
-    // Draw relevance links as "strings".
+    // Draw Links first (behind nodes)
     links.forEach((link) => {
       if (link.source && link.target) {
+        // We calculate parallax for the link endpoints so they stay attached to nodes
+        const p1 = getParallaxPos(link.source, pan);
+        const p2 = getParallaxPos(link.target, pan);
+
         const strength = Math.max(0.08, Math.min(1, link.strength || 0.2));
         const typeColor = linkColors[link.type] || "#6B705C";
-        const alpha = Math.min(0.95, 0.26 + strength * 0.58);
-        // Hex fallback with alpha support.
-        const stroke = typeColor.startsWith("#")
-          ? `${typeColor}${Math.round(alpha * 255)
-              .toString(16)
-              .padStart(2, "0")}`
-          : typeColor;
-        ctx.strokeStyle = stroke;
-        ctx.lineWidth = 1.6 + strength * 2.6;
+        ctx.strokeStyle = typeColor;
+        ctx.globalAlpha = 0.2 + strength * 0.4;
+        ctx.lineWidth = (1.5 + strength * 2) / scale; // Scale line weight inversely
         ctx.beginPath();
-        ctx.moveTo(link.source.x, link.source.y);
-        ctx.lineTo(link.target.x, link.target.y);
+        ctx.moveTo(p1.x, p1.y);
+        ctx.lineTo(p2.x, p2.y);
         ctx.stroke();
       }
     });
+    ctx.globalAlpha = 1.0;
 
-    // Draw square nodes.
+    // Draw Nodes
+    
     nodes.forEach((node) => {
+      const { x, y, depth } = getParallaxPos(node, pan);
       const isSelected = node.id === selectedNodeId;
       const isHovered = node.id === hoveredNodeId;
-      const side = node.size;
-      const half = side / 2;
-      const left = node.x - half;
-      const top = node.y - half;
-      const corner = Math.max(8, side * 0.07);
+      
+      // Get image to determine real dimensions
+      const img = node.post?.url ? imageCacheRef.current.get(node.post.url) : null;
+      const hasImg = img && img.complete && img.naturalWidth > 0;
 
-      ctx.fillStyle = isSelected
-        ? "rgba(203, 153, 126, 0.34)"
-        : isHovered
-        ? "rgba(165, 165, 141, 0.3)"
-        : "rgba(165, 165, 141, 0.2)";
-      ctx.strokeStyle = isSelected
-        ? "rgba(203, 153, 126, 0.95)"
-        : isHovered
-        ? "rgba(165, 165, 141, 0.78)"
-        : "rgba(165, 165, 141, 0.55)";
-      ctx.lineWidth = isSelected ? 3 : 2;
+      // Calculate correct dimensions
+      let nodeWidth = node.size;
+      let nodeHeight = node.size;
+
+      if (hasImg) {
+        const imgRatio = img.naturalWidth / img.naturalHeight;
+        if (imgRatio > 1) {
+          // Landscape: Maintain width, scale down height
+          nodeHeight = node.size / imgRatio;
+        } else {
+          // Portrait: Maintain height, scale down width
+          nodeWidth = node.size * imgRatio;
+        }
+      }
+
+      // Apply depth scaling to the final dimensions
+      const finalW = nodeWidth * (0.8 + depth * 0.2);
+      const finalH = nodeHeight * (0.8 + depth * 0.2);
+      const left = x - finalW / 2;
+      const top = y - finalH / 2;
+      const corner = Math.max(4, Math.min(finalW, finalH) * 0.1);
+
+      // Cool shadow effect for "closer" nodes
+      if (depth > 1.1) {
+        ctx.shadowColor = "rgba(0,0,0,0.1)";
+        ctx.shadowBlur = 10 * depth;
+        ctx.shadowOffsetX = 5;
+        ctx.shadowOffsetY = 5;
+      }
+
+      ctx.fillStyle = isSelected ? "#CB997E" : isHovered ? "#A5A58D" : "#ffffff";
+      ctx.strokeStyle = isSelected ? "#B56576" : "#6B705C";
+      ctx.lineWidth = (isSelected ? 4 : 2) * depth;
 
       ctx.beginPath();
-      ctx.roundRect(left, top, side, side, corner);
+      ctx.roundRect(left, top, finalW, finalH, corner);
       ctx.fill();
       ctx.stroke();
+      
+      // Reset shadows for image
+      ctx.shadowBlur = 0;
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = 0;
 
-      if (node.post && node.post.url) {
-        const img = imageCacheRef.current.get(node.post.url);
-        if (img && img.complete && img.naturalWidth > 0) {
-          ctx.save();
-          ctx.beginPath();
-          ctx.roundRect(left + 3, top + 3, side - 6, side - 6, Math.max(6, corner - 2));
-          ctx.clip();
-          const imgRatio = img.naturalWidth / img.naturalHeight;
-          const boxRatio = (side - 6) / (side - 6);
-          let sx = 0;
-          let sy = 0;
-          let sw = img.naturalWidth;
-          let sh = img.naturalHeight;
-          if (imgRatio > boxRatio) {
-            sw = img.naturalHeight * boxRatio;
-            sx = (img.naturalWidth - sw) / 2;
-          } else {
-            sh = img.naturalWidth / boxRatio;
-            sy = (img.naturalHeight - sh) / 2;
-          }
-          ctx.drawImage(
-            img,
-            sx,
-            sy,
-            sw,
-            sh,
-            left + 3,
-            top + 3,
-            side - 6,
-            side - 6
-          );
-          ctx.restore();
-        }
+      if (hasImg) {
+        ctx.save();
+        ctx.beginPath();
+        // Match the image clip to the new rectangular dimensions
+        ctx.roundRect(left + 2, top + 2, finalW - 4, finalH - 4, corner - 1);
+        ctx.clip();
+        
+        // Draw the full image using the corrected rectangle
+        ctx.drawImage(img, left + 2, top + 2, finalW - 4, finalH - 4);
+        ctx.restore();
       }
     });
 
     ctx.restore();
   }, [nodes, links, width, height, selectedNodeId, hoveredNodeId, scale, pan, linkColors]);
 
-  // Get node at point for click detection
-  const getNodeAtPoint = (canvasX, canvasY) => {
+  const handleMouseMove = (e) => {
     const rect = canvasRef.current.getBoundingClientRect();
-    const screenX = canvasX - rect.left;
-    const screenY = canvasY - rect.top;
-    const { x, y } = toWorld(screenX, screenY);
-
+    const screenX = e.clientX - rect.left;
+    const screenY = e.clientY - rect.top;
+    
+    // Check for node under mouse (accounting for parallax)
+    let found = null;
     for (const node of nodes) {
-      const half = node.size / 2;
-      if (
-        x >= node.x - half &&
-        x <= node.x + half &&
-        y >= node.y - half &&
-        y <= node.y + half
-      ) {
-        return node;
+      const { x, y, depth } = getParallaxPos(node, pan);
+      const worldPos = toWorld(e.clientX, e.clientY);
+      // We check against the parallaxed position, not the static node.x
+      const side = node.size * (0.8 + depth * 0.2);
+      const half = side / 2;
+      
+      // Check collision in world space
+      const cx = width / 2;
+      const cy = height / 2;
+      const mouseWorldX = cx + (screenX - cx - pan.x) / scale;
+      const mouseWorldY = cy + (screenY - cy - pan.y) / scale;
+
+      if (Math.abs(mouseWorldX - x) < half && Math.abs(mouseWorldY - y) < half) {
+        found = node;
+        break;
       }
     }
-    return null;
-  };
 
-  // Mouse move for hover
-  const handleMouseMove = (e) => {
-    const node = getNodeAtPoint(e.clientX, e.clientY);
-    setHoveredNodeId(node ? node.id : null);
+    setHoveredNodeId(found ? found.id : null);
     
     if (isDragging.current) {
-      const dx = e.clientX - dragStart.current.x;
-      const dy = e.clientY - dragStart.current.y;
       onPanZoom?.({
-        pan: { x: pan.x + dx, y: pan.y + dy },
+        pan: { x: pan.x + (e.clientX - dragStart.current.x), y: pan.y + (e.clientY - dragStart.current.y) },
         scale,
       });
       dragStart.current = { x: e.clientX, y: e.clientY };
     }
   };
 
-  // Mouse down to start dragging
   const handleMouseDown = (e) => {
-    const node = getNodeAtPoint(e.clientX, e.clientY);
-    if (node) {
+    if (hoveredNodeId) {
+      const node = nodes.find(n => n.id === hoveredNodeId);
       onNodeClick?.(node);
     } else {
       isDragging.current = true;
@@ -239,13 +247,6 @@ const NetworkCanvas = ({
     }
   };
 
-  // Mouse up to stop dragging
-  const handleMouseUp = () => {
-    isDragging.current = false;
-    setIsDraggingState(false);
-  };
-
-  // Wheel for zoom
   return (
     <canvas
       ref={canvasRef}
@@ -254,15 +255,11 @@ const NetworkCanvas = ({
         width: "100%",
         height: "100%",
         cursor: hoveredNodeId ? "pointer" : isDraggingState ? "grabbing" : "grab",
-        backgroundColor: "#E8E4D9",
       }}
       onMouseMove={handleMouseMove}
       onMouseDown={handleMouseDown}
-      onMouseUp={handleMouseUp}
-      onMouseLeave={handleMouseUp}
-      onContextMenu={(e) => e.preventDefault()}
-      width={width}
-      height={height}
+      onMouseUp={() => { isDragging.current = false; setIsDraggingState(false); }}
+      onMouseLeave={() => { isDragging.current = false; setIsDraggingState(false); }}
     />
   );
 };
