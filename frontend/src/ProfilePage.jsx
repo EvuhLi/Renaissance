@@ -267,7 +267,11 @@ const ProfilePage = () => {
   });
   
   useEffect(() => {
-    setUser(null);
+    if (!resolvedArtistId && storedUsername) {
+      setUser((prev) => prev || defaultUser);
+    } else {
+      setUser(null);
+    }
     setProfileError("");
     setIsPostsLoading(true);
 
@@ -294,7 +298,7 @@ const ProfilePage = () => {
           const params = new URLSearchParams();
           if (artistIdValue) params.set("artistId", String(artistIdValue));
           if (usernameValue) params.set("username", String(usernameValue));
-          params.set("limit", "36");
+          params.set("limit", "12");
           return `${BACKEND_URL}/api/posts${params.toString() ? `?${params}` : ""}`;
         };
 
@@ -968,11 +972,13 @@ const ProfilePage = () => {
               addComment={async (postId, text) => {
                 if (!text || !text.trim()) return null;
                 const pid = normalizeId(postId);
+                const author = (currentUser?.username || storedUsername || "").trim().toLowerCase();
+                if (!author) return null;
                 try {
                   const response = await fetch(`${BACKEND_URL}/api/posts/${pid}/comment`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ username: currentUser?.username, text }),
+                    body: JSON.stringify({ username: author, text }),
                   });
                   if (!response.ok) throw new Error("Failed to add comment");
                   const updatedPost = await response.json();

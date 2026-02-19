@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Link, useLocation } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Link, Navigate } from "react-router-dom";
 import { useState, useEffect } from "react";
 import "./App.css";
 
@@ -29,7 +29,7 @@ function AppShell() {
   const [role, setRole] = useState(
     typeof window !== "undefined" ? localStorage.getItem("role") || "user" : "user"
   );
-  const location = useLocation();
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const hideNav = false; // Show navbar on all pages when logged in
   
   useEffect(() => {
@@ -47,6 +47,8 @@ function AppShell() {
   }, []);
   
   const storedAccountId = accountId;
+  const storedUsername =
+    typeof window !== "undefined" ? localStorage.getItem("username") || "" : "";
   const isAdmin = role === "admin";
   const profilePath = storedAccountId ? "/profile/" + encodeURIComponent(storedAccountId) : "/profile";
 
@@ -153,27 +155,95 @@ function AppShell() {
                   Profile
                 </Link>
               )}
-              <button
-                onClick={() => {
-                  localStorage.removeItem("accountId");
-                  localStorage.removeItem("username");
-                  localStorage.removeItem("role");
-                  localStorage.removeItem("adminToken");
-                  window.dispatchEvent(new Event("accountIdChanged"));
-                  window.location.href = "/";
-                }}
-                style={{
-                  textDecoration: "none",
-                  fontWeight: 700,
-                  color: "#111",
-                  fontSize: "14px",
-                  border: "none",
-                  background: "none",
-                  cursor: "pointer",
-                }}
-              >
-                Logout
-              </button>
+              {storedUsername && (
+                <div
+                  style={{
+                    padding: "6px 12px",
+                    borderRadius: "999px",
+                    background: "rgba(161, 147, 128, 0.12)",
+                    color: "#2D1B1B",
+                    fontSize: "12px",
+                    fontWeight: 700,
+                    letterSpacing: "0.4px",
+                    border: "1px solid rgba(45, 27, 27, 0.12)",
+                  }}
+                >
+                  @{storedUsername}
+                </div>
+              )}
+              <div style={{ position: "relative" }}>
+                <button
+                  onClick={() => setShowLogoutConfirm((prev) => !prev)}
+                  style={{
+                    textDecoration: "none",
+                    fontWeight: 700,
+                    color: "#111",
+                    fontSize: "14px",
+                    border: "none",
+                    background: "none",
+                    cursor: "pointer",
+                  }}
+                >
+                  Logout
+                </button>
+                {showLogoutConfirm && (
+                  <div
+                    style={{
+                      position: "absolute",
+                      right: 0,
+                      top: "calc(100% + 8px)",
+                      background: "#fff",
+                      border: "1px solid rgba(0,0,0,0.12)",
+                      borderRadius: "10px",
+                      boxShadow: "0 10px 24px rgba(0,0,0,0.12)",
+                      padding: "10px",
+                      minWidth: "200px",
+                      zIndex: 1100,
+                    }}
+                  >
+                    <div style={{ fontSize: "13px", color: "#333", marginBottom: "10px" }}>
+                      Log out of Loom?
+                    </div>
+                    <div style={{ display: "flex", gap: "8px", justifyContent: "flex-end" }}>
+                      <button
+                        onClick={() => setShowLogoutConfirm(false)}
+                        style={{
+                          border: "1px solid rgba(0,0,0,0.12)",
+                          background: "#fff",
+                          color: "#111",
+                          borderRadius: "8px",
+                          padding: "6px 10px",
+                          fontSize: "12px",
+                          cursor: "pointer",
+                        }}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={() => {
+                          localStorage.removeItem("accountId");
+                          localStorage.removeItem("username");
+                          localStorage.removeItem("role");
+                          localStorage.removeItem("adminToken");
+                          window.dispatchEvent(new Event("accountIdChanged"));
+                          window.location.href = "/";
+                        }}
+                        style={{
+                          border: "none",
+                          background: "#A63D3D",
+                          color: "#fff",
+                          borderRadius: "8px",
+                          padding: "6px 10px",
+                          fontSize: "12px",
+                          cursor: "pointer",
+                        }}
+                      >
+                        Log out
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
             </>
           ) : (
             <>
@@ -217,7 +287,16 @@ function AppShell() {
       )}
 
       <Routes>
-        <Route path="/" element={<LandingPage />} />
+        <Route
+          path="/"
+          element={
+            storedAccountId ? (
+              <Navigate to={profilePath} replace />
+            ) : (
+              <LandingPage />
+            )
+          }
+        />
         <Route path="/about" element={<AboutPage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/signup" element={<SignUpPage />} />

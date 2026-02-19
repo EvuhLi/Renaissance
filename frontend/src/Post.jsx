@@ -315,21 +315,28 @@ const Post = ({
     const newCommentText = commentText.trim();
     try {
       const result = await addComment(postId, newCommentText);
+      let newComment = null;
       if (result && result.comments && Array.isArray(result.comments) && result.comments.length > 0) {
-        // Backend returns full post, extract the latest comment
-        const newComment = result.comments[result.comments.length - 1];
-        setLoadedComments(prev => {
-          const existing = prev[postId] || { comments: [], total: 0, hasMore: false };
-          return {
-            ...prev,
-            [postId]: {
-              comments: [newComment, ...existing.comments],
-              total: (existing.total || 0) + 1,
-              hasMore: existing.hasMore
-            }
-          };
-        });
+        newComment = result.comments[result.comments.length - 1];
       }
+      if (!newComment) {
+        newComment = {
+          user: user?.username || "",
+          text: newCommentText,
+          createdAt: new Date().toISOString(),
+        };
+      }
+      setLoadedComments(prev => {
+        const existing = prev[postId] || { comments: [], total: 0, hasMore: false };
+        return {
+          ...prev,
+          [postId]: {
+            comments: [newComment, ...existing.comments],
+            total: (existing.total || 0) + 1,
+            hasMore: existing.hasMore
+          }
+        };
+      });
       setCommentText("");
     } catch (err) {
       console.error("Comment submit failed:", err);

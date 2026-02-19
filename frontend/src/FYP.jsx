@@ -125,7 +125,7 @@ const FYP = ({ username }) => {
       );
       setPosts(postsWithImages);
       setCurrentIdx(0);
-    } catch (err) {
+          } catch {
       console.error("FYP fetch error:", err);
       setError("Couldn't load your feed right now.");
     } finally {
