@@ -105,6 +105,8 @@ const ProfilePage = () => {
       ? (localStorage.getItem("accountId") || "").match(/[a-f0-9]{24}/i)?.[0]
       : undefined;
   const activeArtistId = resolvedArtistId || storedAccountId;
+  const profileCacheKey = `profile-cache:${activeArtistId || storedUsername || "anon"}`;
+  const profileCacheTTL = 60 * 1000; // 60s cache
 
   // REFS
   const fileInputRef = useRef(null);
@@ -148,6 +150,7 @@ const ProfilePage = () => {
   const [isBioModalOpen, setIsBioModalOpen] = useState(false);
   const [bioEditValue, setBioEditValue] = useState("");
   const [isUpdatingBio, setIsUpdatingBio] = useState(false);
+  const [cachedFollowState, setCachedFollowState] = useState(null);
 
   const defaultUser = {
     username: storedUsername || "loom_artist_01",
@@ -268,6 +271,23 @@ const ProfilePage = () => {
     setProfileError("");
     setIsPostsLoading(true);
 
+    // Fast path: hydrate from cache if fresh
+    try {
+      const cachedRaw = localStorage.getItem(profileCacheKey);
+      if (cachedRaw) {
+        const cached = JSON.parse(cachedRaw);
+        if (cached?.ts && Date.now() - cached.ts < profileCacheTTL) {
+          if (cached.user) setUser(cached.user);
+          if (Array.isArray(cached.posts)) {
+            setPosts(cached.posts);
+            setIsPostsLoading(false);
+          }
+        }
+      }
+    } catch (e) {
+      // ignore cache errors
+    }
+
     const loadAccountAndPosts = async () => {
       try {
         const buildPostsUrl = (artistIdValue, usernameValue) => {
@@ -350,8 +370,19 @@ const ProfilePage = () => {
           postsData = await postsRes.json();
         }
         if (reqSeq !== postsReqSeqRef.current) return;
-        setPosts(Array.isArray(postsData) ? postsData : []);
+        const normalizedPosts = Array.isArray(postsData) ? postsData : [];
+        setPosts(normalizedPosts);
         setIsPostsLoading(false);
+
+        // Update cache
+        try {
+          localStorage.setItem(
+            profileCacheKey,
+            JSON.stringify({ ts: Date.now(), user: loadedUser || null, posts: normalizedPosts })
+          );
+        } catch (e) {
+          // ignore cache write errors
+        }
       } catch (e) {
         console.error(e);
         setProfileError("Could not load artist profile.");
@@ -670,6 +701,17 @@ const ProfilePage = () => {
   const currentUsername = String(currentUser?.username || "").toLowerCase();
   const profileOwnerUsername = String(profileOwner?.username || "").toLowerCase();
 
+  const followCacheKey = currentUsername && profileOwnerId
+    ? `follow-cache:${currentUsername}:${profileOwnerId}`
+    : null;
+
+  const hasViewerIdentity = Boolean(currentUserId || currentUsername);
+  const hasOwnerIdentity = Boolean(profileOwnerId || profileOwnerUsername || resolvedArtistId);
+  const isOwnProfileOptimistic =
+    !resolvedArtistId &&
+    (Boolean(storedAccountId) || Boolean(storedUsername));
+  const isIdentityResolved = hasViewerIdentity && hasOwnerIdentity;
+
   const isOwnProfile = resolvedArtistId
     ? Boolean(currentUserId && String(currentUserId) === String(resolvedArtistId))
     : Boolean(
@@ -680,9 +722,25 @@ const ProfilePage = () => {
   const isFollowingProfile = Boolean(
     !isOwnProfile &&
       profileOwnerId &&
-      Array.isArray(currentUser?.following) &&
-      currentUser.following.map((id) => String(id)).includes(String(profileOwnerId))
+      (cachedFollowState ?? (
+        Array.isArray(currentUser?.following) &&
+        currentUser.following.map((id) => String(id)).includes(String(profileOwnerId))
+      ))
   );
+
+  useEffect(() => {
+    if (!followCacheKey) return;
+    try {
+      const raw = localStorage.getItem(followCacheKey);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (parsed?.ts && Date.now() - parsed.ts < profileCacheTTL) {
+        setCachedFollowState(Boolean(parsed.isFollowing));
+      }
+    } catch {
+      // ignore cache errors
+    }
+  }, [followCacheKey, profileCacheTTL]);
 
   const handleFollowToggle = async () => {
     if (isOwnProfile || !profileOwnerUsername || !currentUsername) return;
@@ -700,6 +758,17 @@ const ProfilePage = () => {
       const result = await resp.json();
       if (result.target) setUser(result.target);
       if (result.follower) setViewer(result.follower);
+      if (followCacheKey) {
+        setCachedFollowState(Boolean(result.isFollowing));
+        try {
+          localStorage.setItem(
+            followCacheKey,
+            JSON.stringify({ ts: Date.now(), isFollowing: Boolean(result.isFollowing) })
+          );
+        } catch {
+          // ignore cache errors
+        }
+      }
     } catch (err) {
       console.error("Follow toggle failed:", err);
       alert("Could not update follow state.");
@@ -791,7 +860,15 @@ const ProfilePage = () => {
                   ? "Loading..."
                   : (user && user.username) || defaultUser.username}
               </h2>
-              {isOwnProfile ? (
+              {isOwnProfileOptimistic ? (
+                <button
+                  style={styles.primaryBtn}
+                  onClick={() => setIsNewPostOpen(true)}
+                  disabled={isScanning}
+                >
+                  + New Art
+                </button>
+              ) : !isIdentityResolved ? null : isOwnProfile ? (
                 <button
                   style={styles.primaryBtn}
                   onClick={() => setIsNewPostOpen(true)}
