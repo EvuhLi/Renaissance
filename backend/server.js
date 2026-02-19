@@ -7,23 +7,19 @@ const mongoose = require("mongoose");
 const nodeFetch = require("node-fetch");
 const FormData = require("form-data");
 const crypto = require("crypto");
-const path = require("path");
 
 const Post = require("./models/Post");
 const Account = require("./models/Account");
-const Community = require("./models/Community");
 const ActivityLog = require("./models/ActivityLog");
 const { logActivityEvent } = require("./services/behaviorTracking");
 const { runBehaviorAnalysisBatch } = require("./services/behaviorAnalysis");
 
 const app = express();
-mongoose.set("bufferCommands", false);
 
 app.use(cors());
 app.use(compression({ level: 6, threshold: 1024 })); // Gzip responses > 1KB
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
-app.use(express.static(path.join(__dirname, "../frontend/dist")));
 
 function hashPassword(password) {
   const salt = crypto.randomBytes(16).toString("hex");
@@ -46,69 +42,16 @@ function escapeRegex(text = "") {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function normalizeCommunityTags(rawTags, fallbackOwnerId) {
-  if (!Array.isArray(rawTags)) return [];
-  const fallbackOwnerIdRaw = String(fallbackOwnerId || "").trim();
-  const hasValidFallbackOwner = mongoose.Types.ObjectId.isValid(fallbackOwnerIdRaw);
-  const seen = new Set();
-  const normalized = [];
-  for (const tag of rawTags) {
-    const communityIdRaw = String(tag?.communityId || "").trim();
-    const name = String(tag?.name || "").trim();
-    if (!mongoose.Types.ObjectId.isValid(communityIdRaw) || !name) continue;
-    if (seen.has(communityIdRaw)) continue;
-    seen.add(communityIdRaw);
-    const ownerIdRaw = String(tag?.ownerAccountId || "").trim();
-    const ownerSourceId = mongoose.Types.ObjectId.isValid(ownerIdRaw)
-      ? ownerIdRaw
-      : hasValidFallbackOwner
-      ? fallbackOwnerIdRaw
-      : "";
-    if (!ownerSourceId) continue;
-    const ownerAccountId = new mongoose.Types.ObjectId(ownerSourceId);
-    normalized.push({
-      communityId: new mongoose.Types.ObjectId(communityIdRaw),
-      name,
-      visibility: tag?.visibility === "private" ? "private" : "public",
-      ownerAccountId,
-    });
-  }
-  return normalized;
-}
-
 function createAdminSessionToken() {
   const token = crypto.randomBytes(32).toString("hex");
   adminSessions.set(token, Date.now() + ADMIN_SESSION_TTL_MS);
   return token;
 }
-
-function isDbReady() {
-  return mongoose.connection.readyState === 1;
-}
-
-function withTimeout(promise, ms, message) {
-  return Promise.race([
-    promise,
-    new Promise((_, reject) =>
-      setTimeout(() => reject(new Error(message || "Operation timed out")), ms)
-    ),
-  ]);
-}
-
-function isTransientDbError(err) {
-  const msg = String(err?.message || "").toLowerCase();
-  return (
-    msg.includes("timed out") ||
-    msg.includes("timeout") ||
-    msg.includes("network") ||
     msg.includes("topology is closed") ||
     msg.includes("before initial connection is complete") ||
     msg.includes("buffercommands = false") ||
     msg.includes("not connected")
-  );
-}
-
-function isValidAdminSession(token = "") {
+) {
   const expiry = adminSessions.get(token);
   if (!expiry) return false;
   if (Date.now() > expiry) {
@@ -185,12 +128,16 @@ const HF_API_TOKEN = process.env.HF_API_TOKEN;
 const HF_MODEL_URL = "https://router.huggingface.co/hf-inference/models/umm-maybe/AI-image-detector";
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || "loomadmin";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "loomadmin";
-const FAST_DEV_AUTH = (process.env.FAST_DEV_AUTH || "false").toLowerCase() === "true";
 const ADMIN_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const adminSessions = new Map();
-const fypResponseCache = new Map();
 
-function getLastCachedFyp() {
+// =============================
+// DATABASE
+// =============================
+
+if (!MONGODB_URI) {
+  console.error("❌ Missing MOconst fypResponseCache = new Map();
+NGODBfunction getLastCachedFyp() {
   let latest = null;
   for (const entry of fypResponseCache.values()) {
     if (!entry?.data || !Array.isArray(entry.data) || entry.data.length === 0) continue;
@@ -201,23 +148,12 @@ function getLastCachedFyp() {
   return latest?.data || null;
 }
 
-// =============================
-// DATABASE
-// =============================
-
-if (!MONGODB_URI) {
-  console.error("❌ Missing MONGODB_URI in .env");
+_URI in .env");
   process.exit(1);
 }
 
 mongoose
-  .connect(MONGODB_URI, {
-    serverSelectionTimeoutMS: 4000,
-    connectTimeoutMS: 4000,
-    socketTimeoutMS: 10000,
-    maxPoolSize: 25,
-    retryWrites: false,
-  })
+  .connect(MONGODB_URI)
   .then(async () => {
     console.log("MongoDB connected");
     await ensureAdminAccount();
@@ -317,62 +253,40 @@ app.get("/api/accounts/id/:id", async (req, res) => {
   try {
     const { id } = req.params;
 
-    if (!isDbReady()) {
-      res.set("X-Data-Source", "degraded-db-not-ready");
-      return res.json({
-        _id: id,
-        username: String(req.query.username || "dev_user"),
-        role: "user",
-        profilePic: "",
-        bio: "",
-        followersCount: 0,
-        following: [],
-      });
-    }
-
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ error: "Invalid account ID" });
     }
 
-    const account = await withTimeout(
-      Account.findById(id).maxTimeMS(2500),
-      3000,
-      "Account lookup timeout"
-    );
+    const account = await Account.findById(id);
 
     if (!account) {
       return res.status(404).json({ error: "Account not found" });
     }
 
     console.log(`[Accounts/ID] ${id}: ${Date.now() - t0}ms`);
-    res.set("Cache-Control", "public, max-age=15");
     res.json(account);
   } catch (err) {
-    console.error("Get Account By ID Error:", err?.message || err);
-    if (isTransientDbError(err)) {
-      res.set("X-Data-Source", "degraded-transient-db-error");
-      return res.json({
-        _id: req.params.id,
-        username: String(req.query.username || "dev_user"),
-        role: "user",
-        profilePic: "",
-        bio: "",
-        followersCount: 0,
-        following: [],
-      });
-    }
+    console.error("Get Account By ID Error:", err);
     res.status(500).json({ error: "Internal Server Error" });
   }
 });
 
 // =============================
 // FYP RECOMMENDATIONS
-// =============================
+/    res.set("X-Data-Source", "degraded-account-id-error");
+    return res.json({
+      _id: req.params.id,
+      username: String(req.query.username || "dev_user"),
+      role: "user",
+      profilePic: "",
+      bio: "",
+      followersCount: 0,  const includeFollowedCommunities =
+    String(req.query.includeFollowedCommunities || "0") === "1";
+  const accountId = String(req.query.accountId || "").trim();
 
-app.get("/api/fyp", async (req, res) => {
-  const t0 = Date.now();
-  try {
-    const limit = Math.min(parseInt(req.query.limit) || 12, 30); // Reduced default to 12
+      following: [],
+    });
+h.min(parseInt(req.query.limit) || 12, 30); // Reduced default to 12
     const page = Math.max(parseInt(req.query.page) || 0, 0);
     const skip = page * limit;
 
@@ -396,7 +310,47 @@ app.get("/api/fyp", async (req, res) => {
       _id: p._id.toString(),
       artistId: p.artistId?.toString(),
       user: p.user,
-      postCategory: p.postCategory || "artwork",
+      postCategory: p    if (
+      includeFollowedCommunities &&
+      mongoose.Types.ObjectId.isValid(accountId) &&
+      posts.length > 0
+    ) {
+      const account = await Account.findById(accountId, "_id communityFollowing")
+        .maxTimeMS(1500)
+        .lean()
+        .catch(() => null);
+      const followed = Array.isArray(account?.communityFollowing)
+        ? account.communityFollowing.filter((id) =>
+            mongoose.Types.ObjectId.isValid(String(id))
+          )
+        : [];
+      if (followed.length > 0) {
+        const communityPosts = await Post.find(
+          { "communityTags.communityId": { $in: followed } },
+          "_id artistId user postCategory postType title description tags communityTags medium likes likedBy date mlTags url"
+        )
+          .sort({ date: -1 })
+          .limit(limit)
+          .maxTimeMS(2000)
+          .lean()
+          .catch(() => []);
+        if (communityPosts.length > 0) {
+          const merged = [...communityPosts, ...posts];
+          const dedup = [];
+          const seen = new Set();
+          for (const p of merged) {
+            const id = String(p?._id || "");
+            if (!id || seen.has(id)) continue;
+            seen.add(id);
+            dedup.push(p);
+            if (dedup.length >= limit) break;
+          }
+          posts = dedup;
+        }
+      }
+    }
+
+.postCategory || "artwork",
       postType: p.postType || "original",
       title: p.title,
       description: p.description,
@@ -414,21 +368,10 @@ app.get("/api/fyp", async (req, res) => {
     return res.json(serializedPosts);
   } catch (err) {
     console.error("FYP Error:", err.message);
-    res.status(500).json({ error: "Internal Server Error" });
-  }
-});
-
-// Endpoint to fetch image for a specific post
-app.get("/api/posts/:id/image", async (req, res) => {
-  try {
-    const { id } = req.params;
-    
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      return res.status(400).json({ error: "Invalid post ID" });
-    }
-    
-    const post = await Post.findById(id)
-      .select("_id url")
+    res.status(500).json({ error: "Internal Server Err    console.error("FYP Error:", err?.message || err);
+    res.set("X-FYP-Source", "degraded-empty");
+    return res.json([]);
+d url")
       .lean()
       .maxTimeMS(2000);
     
@@ -438,29 +381,31 @@ app.get("/api/posts/:id/image", async (req, res) => {
     
     // Return just the image URL - gzip compression handles the rest
     res.set("Cache-Control", "public, max-age=604800"); // 7 day cache
-    res.json({
-      _id: post._id.toString(),
-      url: post.url,
-    });
-  } catch (err) {
-    console.error("Image fetch error:", err.message);
-    res.status(500).json({ error: "Failed to fetch image" });
-  }
-});
-
-// =============================
-// INTERACTION TRACKING
-// =============================
-
-app.post("/api/interaction", async (req, res) => {
-  try {
-    const { username, postId, type } = req.body;
-    if (!username || !postId || !type) {
-      return res.status(400).json({ error: "username, postId, type required" });
+    res.j      .select("_id url previewUrl")
+      .lean()
+      .maxTimeMS(2000);
+    
+    if (!post) {
+      return res.status(404).json({ error: "Post not found" });
     }
 
+    const resolvedUrl = post.url || post.previewUrl || "";
+    if (!resolvedUrl) {
+      return res.status(404).json({ error: "Post image not found" });
+    }
+    
+    // Return just the image URL - gzip compression handles the rest
+    res.set("Cache-Control", "public, max-age=604800"); // 7 day cache
+    res.json({
+      _id: post._id.toString(),
+      url: resolvedUrl,
+ } = req.body;
+
+    if (!username || !postId || !type)
+      return res.status(400).json({ error: "username, postId, type required" });
+
     const allPosts = await Post.find({}, "_id").lean();
-    const allPostIds = allPosts.map((p) => String(p._id));
+    const allPostIds = allPosts.map((p) => p._id.toString());
 
     await nodeFetch(`${ML_SERVICE_URL}/recommendation/interaction`, {
       method: "POST",
@@ -473,10 +418,10 @@ app.post("/api/interaction", async (req, res) => {
       }),
     });
 
-    return res.json({ ok: true });
+    res.json({ ok: true });
   } catch (err) {
     console.error("Interaction Error:", err.message);
-    return res.status(500).json({ error: "Internal Server Error" });
+    res.status(500).json({ error: "Internal Server Error" });
   }
 });
 
@@ -1018,39 +963,6 @@ app.post("/api/auth/login", async (req, res) => {
     const usernameRaw = (req.body.username || "").trim();
     const password = req.body.password || "";
 
-    if (FAST_DEV_AUTH) {
-      if (!usernameRaw || !password) {
-        return res.status(400).json({ error: "Username and password are required" });
-      }
-      const normalizedUsername = usernameRaw.toLowerCase();
-      if (normalizedUsername === ADMIN_USERNAME.toLowerCase() && password === ADMIN_PASSWORD) {
-        const adminToken = createAdminSessionToken();
-        return res.json({
-          message: "Admin login successful",
-          user: {
-            id: "admin",
-            username: ADMIN_USERNAME,
-            role: "admin",
-            email: null,
-            adminToken,
-          },
-        });
-      }
-      return res.json({
-        message: "Login successful (fast dev mode)",
-        user: {
-          id: "",
-          username: normalizedUsername,
-          email: null,
-          role: "user",
-        },
-      });
-    }
-
-    if (!isDbReady()) {
-      return res.status(503).json({ error: "Database unavailable. Please retry shortly." });
-    }
-
     if (!usernameRaw || !password) {
       return res.status(400).json({ error: "Username and password are required" });
     }
@@ -1058,10 +970,8 @@ app.post("/api/auth/login", async (req, res) => {
     const normalizedUsername = usernameRaw.toLowerCase();
     if (normalizedUsername === ADMIN_USERNAME.toLowerCase() && password === ADMIN_PASSWORD) {
       const adminAccount = await Account.findOne({
-        username: ADMIN_USERNAME.toLowerCase(),
-      })
-        .maxTimeMS(3000)
-        .lean();
+        username: new RegExp(`^${escapeRegex(ADMIN_USERNAME)}$`, "i"),
+      }).lean();
       const adminToken = createAdminSessionToken();
       return res.json({
         message: "Admin login successful",
@@ -1075,52 +985,34 @@ app.post("/api/auth/login", async (req, res) => {
       });
     }
 
-    const loginFilter = usernameRaw.includes("@")
-      ? { email: normalizedUsername }
-      : { username: normalizedUsername };
-    const account = await withTimeout(
-      Account.findOne(loginFilter)
-        .select("_id username email role passwordHash")
-        .maxTimeMS(2500)
-        .lean(),
-      3500,
-      "Login query timeout"
-    );
+    const usernameRegex = new RegExp(`^${escapeRegex(usernameRaw)}$`, "i");
+
+    const account = await Account.findOne({
+      $or: [{ username: usernameRegex }, { email: usernameRaw.toLowerCase() }],
+    });
 
     if (!account || !verifyPassword(password, account.passwordHash)) {
       return res.status(401).json({ error: "Invalid username or password" });
     }
 
-    logActivityEvent({
+    await logActivityEvent({
       req,
       eventType: "login",
       account,
       username: account.username,
       metadata: { via: "password" },
-    }).catch(() => {});
+    });
 
     return res.json({
-      message: "Login successful",
-      user: {
-        id: account._id,
-        username: account.username,
-        email: account.email || null,
-        role: account.role || "user",
-      },
-    });
-  } catch (err) {
-    console.error("Login Error:", err);
-    const msg = String(err?.message || "").toLowerCase();
-    if (msg.includes("timed out") || msg.includes("timeout") || msg.includes("network")) {
-      return res.status(503).json({ error: "Database timeout. Please retry." });
-    }
-    return res.status(500).json({ error: "Internal Server Error" });
-  }
-});
-
-app.post("/api/posts/:id/comment", async (req, res) => {
-  try {
-    const { id } = req.params;
+      mes    // Single fast indexed lookup for auth (avoid multi-query fallback chain).
+    const loginFilter = usernameRaw.includes("@")
+      ? { email: normalizedUsername }
+      : { username: normalizedUsername };
+    const account = await Account.findOne(loginFilter)
+      .select("_id username email role passwordHash")
+      .maxTimeMS(2500)
+      .lean();
+s;
     const { username, text } = req.body;
 
     if (!username || !text) {
@@ -1133,6 +1025,7 @@ app.post("/api/posts/:id/comment", async (req, res) => {
       createdAt: new Date(),
     };
 
+    // Add comment and return the full updated post
     const updated = await Post.findByIdAndUpdate(
       id,
       { $push: { comments: comment } },
@@ -1143,12 +1036,17 @@ app.post("/api/posts/:id/comment", async (req, res) => {
       return res.status(404).json({ error: "Post not found" });
     }
 
+    // Return the full post as plain JSON so frontend gets all fields
     res.json(updated.toObject ? updated.toObject() : updated);
 
+    // Non-blocking operations happen after response
+    // Do these in background without waiting
     (async () => {
       try {
+        // Get post once for tracking (lightweight)
         const post = await Post.findById(id, "date").lean();
-
+        
+        // Fire ML interaction in background (don't wait for it)
         nodeFetch(`${ML_SERVICE_URL}/recommendation/interaction`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1157,13 +1055,14 @@ app.post("/api/posts/:id/comment", async (req, res) => {
             post_id: String(id),
             interaction_type: "comment",
           }),
-        }).catch((e) => console.warn("ML tracking failed:", e.message));
+        }).catch(err => console.warn("ML tracking failed:", err.message));
 
+        // Log activity in background
         const commentAccount = await Account.findOne(
           { username: new RegExp(`^${escapeRegex(String(username))}$`, "i") },
           "_id username"
         ).lean();
-
+        
         const parentTimestamp = post?.date ? new Date(post.date) : null;
         await logActivityEvent({
           req,
@@ -1177,7 +1076,7 @@ app.post("/api/posts/:id/comment", async (req, res) => {
           replyTimestamp: comment.createdAt,
           latencyMs: parentTimestamp ? comment.createdAt.getTime() - parentTimestamp.getTime() : null,
           metadata: { textLength: String(text).length },
-        }).catch((e) => console.warn("Activity logging failed:", e.message));
+        }).catch(err => console.warn("Activity logging failed:", err.message));
       } catch (bgErr) {
         console.warn("Background operation error:", bgErr.message);
       }
@@ -1268,47 +1167,45 @@ app.get("/api/accounts/:username", async (req, res) => {
 // FOLLOW / UNFOLLOW
 // =============================
 
-app.patch("/api/accounts/:id/bio", async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { bio } = req.body;
-
-    if (!isDbReady()) {
-      return res.status(503).json({ error: "Database unavailable. Please retry shortly." });
-    }
-
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      return res.status(400).json({ error: "Invalid target account ID" });
-    }
-
-    const updated = await Account.findByIdAndUpdate(
-      id,
-      { bio: bio },
-      { new: true }
-    );
-
-    if (!updated) return res.status(404).json({ error: "Account not found" });
-    res.json(updated);
-  } catch (err) {
-    console.error("Bio Update Error:", err?.message || err);
-    if (isTransientDbError(err)) {
-      return res.status(503).json({ error: "Bio update temporarily unavailable. Retry shortly." });
-    }
-    res.status(500).json({ error: "Internal Server Error" });
-  }
-});
-
 app.patch("/api/accounts/:username/follow", async (req, res) => {
   try {
-    const { username } = req.params;
-    const { follower } = req.body;
+    const { username } = req.params; // target to be followed/unfollowed
+    const { follower } = req.body; // who is performing the action
 
     if (!follower || !username) {
       return res.status(400).json({ error: "follower and username required" });
     }
 
+    // Ensure both accounts exist (create follower on demand)
     const target = await Account.findOne({ username });
-    if (!target) return res.status(404).json({ error: "Target account not found" });
+    if (app.patch("/api/accounts/:id/bio", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { bio } = req.body;
+
+    // Check if the ID is valid
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ error: "Invalid target account ID" });
+    }
+
+    // Update the user's bio in the database
+    const updated = await Account.findByIdAndUpdate(
+      id,
+      { bio: bio },
+      { new: true } // Returns the updated document
+    );
+
+    if (!updated) return res.status(404).json({ error: "Account not found" });
+    
+    // Send the updated user back to the frontend
+    res.json(updated);
+  } catch (err) {
+    console.error("Bio Update Error:", err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+!target) return res.status(404).json({ error: "Target account not found" });
 
     const followerAccount = await Account.findOneAndUpdate(
       { username: follower },
@@ -1317,14 +1214,12 @@ app.patch("/api/accounts/:username/follow", async (req, res) => {
     );
 
     const targetId = target._id;
-    const alreadyFollowing = (followerAccount.following || []).some(
-      (id) => String(id) === String(targetId)
-    );
+    const alreadyFollowing = (followerAccount.following || []).some((id) => String(id) === String(targetId));
 
-    let updatedFollower;
-    let updatedTarget;
+    let updatedFollower, updatedTarget;
 
     if (alreadyFollowing) {
+      // unfollow
       updatedFollower = await Account.findByIdAndUpdate(
         followerAccount._id,
         { $pull: { following: targetId } },
@@ -1336,6 +1231,7 @@ app.patch("/api/accounts/:username/follow", async (req, res) => {
         { new: true }
       );
     } else {
+      // follow
       updatedFollower = await Account.findByIdAndUpdate(
         followerAccount._id,
         { $addToSet: { following: targetId } },
@@ -1359,249 +1255,269 @@ app.patch("/api/accounts/:username/follow", async (req, res) => {
       },
     });
 
-    res.json({
-      target: updatedTarget,
-      follower: updatedFollower,
-      isFollowing: !alreadyFollowing,
-    });
+    res.json({ target: updatedTarget, follower: updatedFollower, isFollowing: !alreadyFollowing });
   } catch (err) {
     console.error("Follow Toggle Error:", err);
     res.status(500).json({ error: "Internal Server Error" });
   }
 });
 
-
 // =============================
-// COMMUNITIES
+// CREATE ACCOUNT
 // =============================
 
-app.post("/api/communities", async (req, res) => {
+app.post("/api/accounts", async (req, res) => {
   try {
-    const { ownerAccountId, ownerUsername, name, visibility } = req.body;
-    const ownerId = String(ownerAccountId || "").trim();
-    const communityName = String(name || "").trim();
+    const { username, bio, followersCount } = req.body;
 
-    if (!isDbReady()) {
-      return res.status(503).json({ error: "Database unavailable. Please retry shortly." });
+    if (!username || !username.trim()) {
+      return res.status(400).json({ error: "Username required" });
     }
 
-    if (!mongoose.Types.ObjectId.isValid(ownerId)) {
-      return res.status(400).json({ error: "Valid ownerAccountId required" });
-    }
-    if (!communityName) {
-      return res.status(400).json({ error: "Community name required" });
-    }
-
-    const owner = await Account.findById(ownerId, "_id username").lean();
-    if (!owner) return res.status(404).json({ error: "Owner account not found" });
-    const normalizedName = communityName.toLowerCase();
-
-    const existing = await Community.findOne({
-      ownerAccountId: owner._id,
-      normalizedName,
-    }).lean();
+    const existing = await Account.findOne({ username: username.trim() });
     if (existing) {
-      return res.json({
-        _id: String(existing._id),
-        ownerAccountId: String(existing.ownerAccountId),
-        ownerUsername: existing.ownerUsername,
-        name: existing.name,
-        visibility: existing.visibility,
-        followersCount: Array.isArray(existing.followers) ? existing.followers.length : 0,
-      });
+      return res.status(400).json({ error: "Username already exists" });
     }
 
-    const created = await Community.create({
-      ownerAccountId: owner._id,
-      ownerUsername:
-        String(ownerUsername || owner.username || "").trim().toLowerCase() || owner.username,
-      name: communityName,
-      normalizedName,
-      visibility: visibility === "private" ? "private" : "public",
-      followers: [owner._id],
+    const newAccount = await Account.create({
+      username: username.trim(),
+      profilePic: "",
+      bio: bio || "",
+      followersCount: followersCount || 0,
+      following: [],
     });
 
-    await Account.findByIdAndUpdate(owner._id, {
-      $addToSet: { communityFollowing: created._id },
+    res.status(201).json(newAccount);
+  } catch (err) {
+    console.error("Create Account Error:", err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+// =============================
+// ADMIN PORTAL
+// =============================
+
+app.get("/api/admin/accounts", requireAdmin, async (req, res) => {
+  try {
+    const search = String(req.query.search || "").trim();
+    const page = Math.max(1, Number(req.query.page) || 1);
+    const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize) || 25));
+
+    const query = {};
+    if (search) {
+      query.username = new RegExp(escapeRegex(search), "i");
+    }
+
+    const total = await Account.countDocuments(query);
+    const accounts = await Account.find(
+      query,
+      "_id username bio followersCount following botScore behaviorFeatures lastBehaviorComputedAt createdAt"
+    )
+      .sort({ username: 1 })
+      .skip((page - 1) * pageSize)
+      .limit(pageSize)
+      .lean();
+
+    const accountIds = accounts.map((a) => a._id);
+
+    const postStats = await Post.aggregate([
+      { $match: { artistId: { $in: accountIds } } },
+      {
+        $project: {
+          artistId: 1,
+          likes: { $ifNull: ["$likes", 0] },
+          commentsCount: { $size: { $ifNull: ["$comments", []] } },
+        },
+      },
+      {
+        $group: {
+          _id: "$artistId",
+          postsCount: { $sum: 1 },
+          likesReceived: { $sum: "$likes" },
+          commentsReceived: { $sum: "$commentsCount" },
+        },
+      },
+    ]);
+
+    const activityStats = await ActivityLog.aggregate([
+      { $match: { userId: { $in: accountIds } } },
+      {
+        $group: {
+          _id: "$userId",
+          totalEvents: { $sum: 1 },
+          likesGiven: { $sum: { $cond: [{ $eq: ["$eventType", "like"] }, 1, 0] } },
+          commentsMade: { $sum: { $cond: [{ $eq: ["$eventType", "comment_create"] }, 1, 0] } },
+          followsGiven: { $sum: { $cond: [{ $eq: ["$eventType", "follow"] }, 1, 0] } },
+          lastActiveAt: { $max: "$timestamp" },
+        },
+      },
+    ]);
+
+    const postMap = new Map(postStats.map((s) => [String(s._id), s]));
+    const activityMap = new Map(activityStats.map((s) => [String(s._id), s]));
+
+    const items = accounts.map((account) => {
+      const id = String(account._id);
+      const ps = postMap.get(id) || {};
+      const as = activityMap.get(id) || {};
+      const followingCount = Array.isArray(account.following) ? account.following.length : 0;
+      const botProbability = Math.max(
+        0,
+        Math.min(
+          1,
+          Number(account.botScore ?? account.behaviorFeatures?.botScore ?? 0)
+        )
+      );
+
+      return {
+        profile: {
+          id,
+          username: account.username,
+          bio: account.bio || "",
+          followersCount: Number(account.followersCount || 0),
+          followingCount,
+          createdAt: account.createdAt || null,
+          lastBehaviorComputedAt: account.lastBehaviorComputedAt || null,
+        },
+        engagement: {
+          postsCount: Number(ps.postsCount || 0),
+          likesReceived: Number(ps.likesReceived || 0),
+          commentsReceived: Number(ps.commentsReceived || 0),
+          likesGiven: Number(as.likesGiven || 0),
+          commentsMade: Number(as.commentsMade || 0),
+          followsGiven: Number(as.followsGiven || 0),
+          totalEvents: Number(as.totalEvents || 0),
+          lastActiveAt: as.lastActiveAt || null,
+        },
+        bot: {
+          probability: Number(botProbability.toFixed(4)),
+          behaviorFeatures: account.behaviorFeatures || {},
+        },
+      };
     });
 
-    return res.status(201).json({
-      _id: String(created._id),
-      ownerAccountId: String(created.ownerAccountId),
-      ownerUsername: created.ownerUsername,
-      name: created.name,
-      visibility: created.visibility,
-      followersCount: 1,
+    return res.json({
+      items,
+      page,
+      pageSize,
+      total,
+      totalPages: Math.max(1, Math.ceil(total / pageSize)),
     });
   } catch (err) {
-    console.error("Create Community Error:", err?.message || err);
-    if (isTransientDbError(err)) {
-      return res.status(503).json({ error: "Community create temporarily unavailable. Retry shortly." });
-    }
+    console.error("Admin list accounts error:", err);
     return res.status(500).json({ error: "Internal Server Error" });
   }
 });
 
-app.get("/api/communities/account/:accountId", async (req, res) => {
+app.delete("/api/admin/accounts/:id", requireAdmin, async (req, res) => {
   try {
-    const { accountId } = req.params;
-    if (!isDbReady()) {
-      res.set("X-Data-Source", "degraded-db-not-ready");
-      return res.json({ owned: [], followed: [] });
-    }
-    if (!mongoose.Types.ObjectId.isValid(accountId)) {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ error: "Invalid account ID" });
     }
-    const account = await withTimeout(
-      Account.findById(accountId, "_id communityFollowing").maxTimeMS(2500).lean(),
-      3000,
-      "Community account lookup timeout"
+
+    const account = await Account.findById(id).lean();
+    if (!account) {
+      return res.status(404).json({ error: "Account not found" });
+    }
+
+    if (String(account.username || "").toLowerCase() === ADMIN_USERNAME.toLowerCase()) {
+      return res.status(403).json({ error: "Cannot delete admin account" });
+    }
+
+    const usernameRegex = new RegExp(`^${escapeRegex(String(account.username || ""))}$`, "i");
+
+    await Post.deleteMany({ artistId: account._id });
+    await Post.updateMany(
+      {},
+      {
+        $pull: {
+          likedBy: { $in: [String(account.username || "").toLowerCase(), String(account.username || "")] },
+          comments: { user: usernameRegex },
+        },
+      }
     );
-    if (!account) return res.status(404).json({ error: "Account not found" });
 
-    const [ownedRaw, followedRaw] = await Promise.all([
-      Community.find({ ownerAccountId: account._id })
-        .select("_id ownerAccountId ownerUsername name visibility followers")
-        .sort({ name: 1 })
-        .maxTimeMS(2500)
-        .lean(),
-      Community.find({ _id: { $in: account.communityFollowing || [] } })
-        .select("_id ownerAccountId ownerUsername name visibility followers")
-        .sort({ name: 1 })
-        .maxTimeMS(2500)
-        .lean(),
+    await ActivityLog.deleteMany({
+      $or: [{ userId: account._id }, { username: usernameRegex }],
+    });
+
+    await Account.updateMany(
+      { following: account._id },
+      { $pull: { following: account._id } }
+    );
+
+    await Account.deleteOne({ _id: account._id });
+
+    // Recompute followersCount after relationship cleanup.
+    await Account.updateMany({}, { $set: { followersCount: 0 } });
+    const followerAgg = await Account.aggregate([
+      { $unwind: "$following" },
+      { $group: { _id: "$following", count: { $sum: 1 } } },
     ]);
+    if (followerAgg.length) {
+      await Account.bulkWrite(
+        followerAgg.map((r) => ({
+          updateOne: {
+            filter: { _id: r._id },
+            update: { $set: { followersCount: r.count } },
+          },
+        }))
+      );
+    }
 
-    const mapCommunity = (c) => ({
-      _id: String(c._id),
-      ownerAccountId: String(c.ownerAccountId),
-      ownerUsername: c.ownerUsername,
-      name: c.name,
-      visibility: c.visibility,
-      followersCount: Array.isArray(c.followers) ? c.followers.length : 0,
-    });
-
-    res.set("Cache-Control", "public, max-age=15");
-    return res.json({
-      owned: ownedRaw.map(mapCommunity),
-      followed: followedRaw.map(mapCommunity),
-    });
+    return res.json({ ok: true, deletedAccountId: id, username: account.username });
   } catch (err) {
-    console.error("List Communities Error:", err);
-    res.set("X-Data-Source", "degraded-communities-error");
-    return res.json({ owned: [], followed: [] });
+    console.error("Admin delete account error:", err);
+    return res.status(500).json({ error: "Internal Server Error" });
   }
 });
 
-app.post("/api/communities/:id/follow", async (req, res) => {
+app.post("/api/behavior/recompute", async (req, res) => {
   try {
-    const { id } = req.params;
-    const { accountId, username, postId } = req.body;
-
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      return res.status(400).json({ error: "Invalid community ID" });
-    }
-    if (!mongoose.Types.ObjectId.isValid(String(accountId || ""))) {
-      return res.status(400).json({ error: "Valid accountId required" });
-    }
-
-    const community = await Community.findById(id);
-    if (!community) return res.status(404).json({ error: "Community not found" });
-
-    const account = await Account.findById(accountId, "_id username");
-    if (!account) return res.status(404).json({ error: "Account not found" });
-
-    const alreadyFollowing = (community.followers || []).some(
-      (f) => String(f) === String(account._id)
-    );
-    if (alreadyFollowing && !postId) {
-      return res.json({
-        ok: true,
-        status: "already_following",
-        community: {
-          _id: String(community._id),
-          ownerAccountId: String(community.ownerAccountId),
-          ownerUsername: community.ownerUsername,
-          name: community.name,
-          visibility: community.visibility,
-        },
-        linkedPost: null,
-      });
-    }
-
-    if (community.visibility === "private") {
-      const alreadyPending = (community.pendingRequests || []).some(
-        (r) => String(r.accountId) === String(account._id)
-      );
-      if (!alreadyPending) {
-        community.pendingRequests.push({
-          accountId: account._id,
-          username:
-            String(username || account.username || "").trim().toLowerCase() || account.username,
-          postId: mongoose.Types.ObjectId.isValid(String(postId || ""))
-            ? new mongoose.Types.ObjectId(String(postId))
-            : null,
-          createdAt: new Date(),
-        });
-        await community.save();
-      }
-      return res.json({ ok: true, status: "pending_approval" });
-    }
-
-    if (!alreadyFollowing) {
-      await Account.findByIdAndUpdate(account._id, {
-        $addToSet: { communityFollowing: community._id },
-      });
-      await Community.findByIdAndUpdate(community._id, {
-        $addToSet: { followers: account._id },
-      });
-    }
-
-    let linkedPost = null;
-    if (postId && mongoose.Types.ObjectId.isValid(String(postId))) {
-      const post = await Post.findOne({
-        _id: new mongoose.Types.ObjectId(String(postId)),
-        artistId: account._id,
-      });
-      if (post) {
-        const exists = (post.communityTags || []).some(
-          (t) => String(t.communityId) === String(community._id)
-        );
-        if (!exists) {
-          post.communityTags.push({
-            communityId: community._id,
-            name: community.name,
-            visibility: community.visibility,
-            ownerAccountId: community.ownerAccountId,
-          });
-          await post.save();
-        }
-        linkedPost = {
-          _id: String(post._id),
-          communityTags: (post.communityTags || []).map((c) => ({
-            communityId: c.communityId ? String(c.communityId) : "",
-            name: c.name || "",
-            visibility: c.visibility || "public",
-            ownerAccountId: c.ownerAccountId ? String(c.ownerAccountId) : "",
-          })),
-        };
-      }
-    }
-
-    return res.json({
-      ok: true,
-      status: "following",
-      community: {
-        _id: String(community._id),
-        ownerAccountId: String(community.ownerAccountId),
-        ownerUsername: community.ownerUsername,
-        name: community.name,
-        visibility: community.visibility,
-      },
-      linkedPost,
-    });
+    const limit = Math.min(Number(req.body?.limit) || 200, 5000);
+    const result = await runBehaviorAnalysisBatch(limit);
+    res.json({ ok: true, ...result, ranAt: new Date().toISOString() });
   } catch (err) {
-    console.error("Community Follow/Link Error:", err);
+    console.error("Behavior recompute error:", err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+// =============================
+// START SERVER
+// =============================
+
+app.listen(PORT, () =>
+  console.log(`🚀 Backend running on http://localhost:${PORT}`)
+);
+
+// Public search users endpoint
+app.get("/api/search/users", async (req, res) => {
+  try {
+    const search = String(req.query.search || "").trim();
+    const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 50));
+
+    const query = { role: { $ne: "admin" } }; // Exclude admins
+    if (search) {
+      query.username = new RegExp(escapeRegex(search), "i");
+    }
+
+    const users = await Account.find(query, "_id username bio followersCount createdAt")
+      .sort({ username: 1 })
+      .limit(limit)
+      .lean();
+
+    res.json(users);
+  } catch (err) {
+    console.error("User search error:", err);
+    res.status(500).json({ error: "Search failed" });
+  }
+});
+ decision });
+  } catch (err) {
+    console.error("Community request moderation error:", err);
     return res.status(500).json({ error: "Internal Server Error" });
   }
 });
@@ -1892,7 +1808,62 @@ app.listen(PORT, () =>
   console.log(`🚀 Backend running on http://localhost:${PORT}`)
 );
 
-// Public search users endpoint
+// Public s    const ownedCommunities = await Community.find({ ownerAccountId: account._id });
+    for (const community of ownedCommunities) {
+      const remainingFollowers = (community.followers || []).filter(
+        (fid) => String(fid) !== String(account._id)
+      );
+      const nextOwnerId = remainingFollowers.length ? remainingFollowers[0] : null;
+      if (!nextOwnerId) {
+        await Community.deleteOne({ _id: community._id });
+        await Account.updateMany(
+          { communityFollowing: community._id },
+          { $pull: { communityFollowing: community._id } }
+        );
+        await Post.updateMany(
+          {},
+          { $pull: { communityTags: { communityId: community._id } } }
+        );
+        continue;
+      }
+      const nextOwner = await Account.findById(nextOwnerId, "_id username").lean();
+      if (!nextOwner) continue;
+      await Community.updateOne(
+        { _id: community._id },
+        {
+          $set: {
+            ownerAccountId: nextOwner._id,
+            ownerUsername: String(nextOwner.username || "").toLowerCase(),
+            followers: remainingFollowers,
+          },
+          $pull: {
+            pendingRequests: { requesterAccountId: account._id },
+          },
+        }
+      );
+      await Post.updateMany(
+        { "communityTags.communityId": community._id },
+        {
+          $set: {
+            "communityTags.$[elem].ownerAccountId": nextOwner._id,
+          },
+        },
+        {
+          arrayFilters: [{ "elem.communityId": community._id }],
+        }
+      );
+    }
+
+    await Community.updateMany(
+      {},
+      {
+        $pull: {
+          followers: account._id,
+          pendingRequests: { requesterAccountId: account._id },
+        },
+      }
+    );
+earch users endpoint
 app.get("/api/search/users", async (req, res) => {
   try {
     const search = String(req.query.search || "").trim();
@@ -1927,8 +1898,11 @@ if ((process.env.BEHAVIOR_ANALYSIS_ENABLED || "true").toLowerCase() !== "false")
   }, intervalMs);
 }
 
+<<<<<<< HEAD
+=======
 // SPA fallback: serve index.html for any non-API routes
 app.use((req, res) => {
   res.sendFile(path.join(__dirname, "../frontend/dist/index.html"));
 });
 
+>>>>>>> 71b11e0c992c099ac66bf2cd4f890a90134957d4
