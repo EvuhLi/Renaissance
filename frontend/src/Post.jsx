@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, memo, useMemo } from "react";
 import { Link } from "react-router-dom";
 import { GiShirtButton } from "react-icons/gi";
 
@@ -74,6 +74,28 @@ const CanvasImage = ({ src, fit = "cover", canvasStyle }) => {
     />
   );
 };
+
+// ==========================================
+// MEMOIZED COMMENT COMPONENT
+// ==========================================
+const CommentItem = memo(({ comment, index }) => {
+  return (
+    <div
+      style={{
+        marginBottom: "12px",
+        fontSize: "14px",
+        color: "#555",
+        padding: "8px 0",
+      }}
+    >
+      <strong style={{ color: "#2D1B1B" }}>{comment.user}</strong>
+      <span style={{ marginLeft: "8px" }}>{comment.text}</span>
+      <div style={{ color: "#999", fontSize: "12px", marginTop: "4px" }}>
+        {comment.createdAt ? new Date(comment.createdAt).toLocaleString() : ""}
+      </div>
+    </div>
+  );
+});
 
 // ==========================================
 // TAG RENDERING HELPERS
@@ -223,10 +245,58 @@ const Post = ({
 
   const [commentText, setCommentText] = useState("");
   const [slideIndex, setSlideIndex] = useState(0);
+  const [commentsPage, setCommentsPage] = useState(0);
+  const [loadedComments, setLoadedComments] = useState({});
+  const [commentsLoading, setCommentsLoading] = useState(false);
+  const COMMENTS_PER_PAGE = 15;
+
+  // Fetch comments on-demand from the backend
+  const fetchComments = async (postId, page = 0) => {
+    if (commentsLoading) return;
+    try {
+      setCommentsLoading(true);
+      const res = await fetch(
+        `http://localhost:3001/api/posts/${postId}/comments?page=${page}&limit=${COMMENTS_PER_PAGE}`
+      );
+      if (!res.ok) throw new Error("Failed to fetch comments");
+      const data = await res.json();
+      
+      // Merge with existing comments
+      setLoadedComments(prev => ({
+        ...prev,
+        [postId]: {
+          comments: page === 0 ? data.comments : [...(prev[postId]?.comments || []), ...data.comments],
+          total: data.total,
+          hasMore: data.hasMore
+        }
+      }));
+    } catch (err) {
+      console.error("Comments fetch error:", err);
+    } finally {
+      setCommentsLoading(false);
+    }
+  };
 
   useEffect(() => {
     setSlideIndex(0);
-  }, [selectedPost?._id, selectedPost?.id]);
+    setCommentsPage(0);
+    const postId = String(selectedPost?._id || selectedPost?.id);
+    
+    // If selectedPost already has comments, use them directly
+    if (selectedPost?.comments && Array.isArray(selectedPost.comments)) {
+      setLoadedComments(prev => ({
+        ...prev,
+        [postId]: {
+          comments: selectedPost.comments,
+          total: selectedPost.comments.length,
+          hasMore: false
+        }
+      }));
+    } else if (selectedPost?._id) {
+      // Only fetch if we don't have comments data
+      fetchComments(selectedPost._id, 0);
+    }
+  }, [selectedPost]);
 
   const slidesFor = (post) => {
     if (!post) return [];
@@ -242,9 +312,25 @@ const Post = ({
     if (!commentText || !commentText.trim()) return;
     if (!selectedPost) return;
     const postId = String(selectedPost._id || selectedPost.id);
+    const newCommentText = commentText.trim();
     try {
-      const updated = await addComment(postId, commentText.trim());
-      if (updated) setCommentText("");
+      const result = await addComment(postId, newCommentText);
+      if (result && result.comments && Array.isArray(result.comments) && result.comments.length > 0) {
+        // Backend returns full post, extract the latest comment
+        const newComment = result.comments[result.comments.length - 1];
+        setLoadedComments(prev => {
+          const existing = prev[postId] || { comments: [], total: 0, hasMore: false };
+          return {
+            ...prev,
+            [postId]: {
+              comments: [newComment, ...existing.comments],
+              total: (existing.total || 0) + 1,
+              hasMore: existing.hasMore
+            }
+          };
+        });
+      }
+      setCommentText("");
     } catch (err) {
       console.error("Comment submit failed:", err);
     }
@@ -451,24 +537,54 @@ const Post = ({
                 <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
                   <strong>{Math.max(0, (localLikes ?? selectedPost.likes ?? 0))} buttons</strong>
                   <strong style={{ color: "#8e8e8e", fontSize: "14px" }}>
-                    {(selectedPost.comments || []).length} threads
+                    {loadedComments[String(selectedPost._id || selectedPost.id)]?.total || 0} threads
                   </strong>
                 </div>
               </div>
 
               <div style={styles.commentList}>
-                {(selectedPost.comments || []).map((c, index) => (
-                  <div
-                    key={c._id || c.createdAt || `${c.user || "comment"}-${index}`}
-                    style={styles.commentItem}
-                  >
-                    <strong>{c.user}</strong>
-                    <span style={{ marginLeft: 8 }}>{c.text}</span>
-                    <div style={{ color: "#999", fontSize: "12px" }}>
-                      {c.createdAt ? new Date(c.createdAt).toLocaleString() : ""}
-                    </div>
-                  </div>
-                ))}
+                {(() => {
+                  const postId = String(selectedPost._id || selectedPost.id);
+                  const commentData = loadedComments[postId];
+                  const allComments = commentData?.comments || [];
+                  const hasMore = commentData?.hasMore || false;
+
+                  return (
+                    <>
+                      {allComments.length === 0 && !commentsLoading && (
+                        <p style={{ color: "#999", fontSize: "14px", textAlign: "center", padding: "20px" }}>
+                          No comments yet. Be the first!
+                        </p>
+                      )}
+                      {allComments.map((c, idx) => (
+                        <CommentItem key={c._id || c.createdAt || `${c.user}-${idx}`} comment={c} index={idx} />
+                      ))}
+                      {commentsLoading && (
+                        <p style={{ color: "#999", fontSize: "12px", textAlign: "center" }}>Loading...</p>
+                      )}
+                      {hasMore && !commentsLoading && (
+                        <button
+                          onClick={() => {
+                            setCommentsPage(p => p + 1);
+                            fetchComments(postId, commentsPage + 1);
+                          }}
+                          style={{
+                            background: "none",
+                            border: "none",
+                            color: "#A63D3D",
+                            fontWeight: "700",
+                            cursor: "pointer",
+                            fontSize: "14px",
+                            padding: "8px 0",
+                            marginTop: "8px",
+                          }}
+                        >
+                          Load more comments...
+                        </button>
+                      )}
+                    </>
+                  );
+                })()}
               </div>
 
               <form style={styles.commentForm} onSubmit={handleCommentSubmit}>
@@ -493,15 +609,26 @@ const Post = ({
 };
 
 const styles = {
-  grid: { display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "28px" },
+  grid: { 
+    display: "grid", 
+    gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", 
+    gap: "16px",
+    padding: "20px",
+  },
   gridItem: {
     position: "relative",
     aspectRatio: "1/1",
     cursor: "pointer",
     overflow: "hidden",
-    backgroundColor: "#000",
+    backgroundColor: "#f5f1e8",
+    borderRadius: "12px",
+    border: "1px solid rgba(45, 27, 27, 0.1)",
+    transition: "all 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
   },
-  artworkWrapper: { width: "100%", height: "100%" },
+  artworkWrapper: { 
+    width: "100%", 
+    height: "100%",
+  },
   gridOverlay: {
     position: "absolute",
     top: 0, left: 0,
@@ -512,21 +639,22 @@ const styles = {
   gridTitle: {
     position: "absolute",
     left: 0, right: 0, bottom: 0,
-    padding: "8px 10px",
-    fontSize: "13px",
-    color: "#fff",
-    background: "linear-gradient(180deg, rgba(0,0,0,0) 0%, rgba(0,0,0,0.7) 100%)",
+    padding: "12px 12px",
+    fontSize: "14px",
+    color: "#2D1B1B",
+    background: "linear-gradient(180deg, rgba(255,255,255,0) 0%, rgba(255,251,243,0.95) 100%)",
     zIndex: 12,
     whiteSpace: "nowrap",
     overflow: "hidden",
     textOverflow: "ellipsis",
     pointerEvents: "none",
+    fontWeight: "600",
   },
   modalOverlay: {
     position: "fixed",
     top: 0, left: 0,
     width: "100%", height: "100%",
-    backgroundColor: "rgba(0,0,0,0.8)",
+    backgroundColor: "rgba(0,0,0,0.7)",
     display: "flex",
     justifyContent: "center",
     alignItems: "center",
@@ -534,16 +662,17 @@ const styles = {
   },
   modalContent: {
     display: "flex",
-    backgroundColor: "#fff",
+    backgroundColor: "#fffdf8",
     width: "90%",
-    maxWidth: "900px",
-    height: "600px",
-    borderRadius: "4px",
+    maxWidth: "1000px",
+    height: "650px",
+    borderRadius: "16px",
     overflow: "hidden",
+    boxShadow: "0 20px 60px rgba(0,0,0,0.2)",
   },
   modalImageSide: {
     flex: 1.5,
-    backgroundColor: "#000",
+    backgroundColor: "#f5f1e8",
     position: "relative",
     display: "flex",
     alignItems: "center",
@@ -553,28 +682,30 @@ const styles = {
     position: "absolute",
     top: "50%",
     transform: "translateY(-50%)",
-    width: "34px",
-    height: "34px",
-    borderRadius: "999px",
+    width: "40px",
+    height: "40px",
+    borderRadius: "50%",
     border: "none",
-    backgroundColor: "rgba(255,255,255,0.85)",
-    color: "#222",
+    backgroundColor: "rgba(45, 27, 27, 0.15)",
+    color: "#2D1B1B",
     fontSize: "24px",
     lineHeight: 1,
     cursor: "pointer",
     zIndex: 20,
+    transition: "all 0.2s ease",
   },
   slideCounter: {
     position: "absolute",
-    bottom: "12px",
+    bottom: "16px",
     left: "50%",
     transform: "translateX(-50%)",
-    background: "rgba(0,0,0,0.6)",
+    background: "rgba(45, 27, 27, 0.8)",
     color: "#fff",
     fontSize: "12px",
-    borderRadius: "999px",
-    padding: "4px 10px",
+    borderRadius: "20px",
+    padding: "6px 14px",
     zIndex: 20,
+    fontWeight: "500",
   },
   modalCanvasWrap: {
     width: "100%", height: "100%",
@@ -606,72 +737,120 @@ const styles = {
     transition: "opacity 0.2s",
   },
   modalMeta: {
-    padding: "12px 15px",
-    borderBottom: "1px solid #efefef",
+    padding: "16px 20px",
+    borderBottom: "1px solid rgba(45, 27, 27, 0.08)",
     display: "flex",
     flexDirection: "column",
-    gap: "10px",
+    gap: "12px",
   },
-  title: { fontSize: "16px", fontWeight: "600", color: "#262626" },
-  description: { fontSize: "14px", color: "#262626" },
-  tagSection: { display: "flex", flexDirection: "column", gap: "10px" },
-  tagGroup: { display: "flex", flexDirection: "column", gap: "5px" },
+  title: { 
+    fontSize: "18px", 
+    fontWeight: "700", 
+    color: "#2D1B1B" 
+  },
+  description: { 
+    fontSize: "14px", 
+    color: "#555",
+    lineHeight: "1.5",
+  },
+  tagSection: { 
+    display: "flex", 
+    flexDirection: "column", 
+    gap: "12px",
+    padding: "16px 20px",
+  },
+  tagGroup: { 
+    display: "flex", 
+    flexDirection: "column", 
+    gap: "8px" 
+  },
   tagGroupLabel: {
     fontSize: "11px",
     fontWeight: "700",
-    color: "#aaa",
+    color: "#A63D3D",
     textTransform: "uppercase",
-    letterSpacing: "0.05em",
+    letterSpacing: "0.06em",
   },
-  tagRow: { display: "flex", flexWrap: "wrap", gap: "6px", alignItems: "center" },
+  tagRow: { 
+    display: "flex", 
+    flexWrap: "wrap", 
+    gap: "8px", 
+    alignItems: "center" 
+  },
   tagManual: {
     fontSize: "13px",
-    color: "#00376b",
-    backgroundColor: "#e8f0fe",
-    borderRadius: "12px",
-    padding: "3px 10px",
-    fontWeight: "500",
+    color: "#A63D3D",
+    backgroundColor: "rgba(166, 61, 61, 0.08)",
+    borderRadius: "14px",
+    padding: "5px 12px",
+    fontWeight: "600",
+    border: "1px solid rgba(166, 61, 61, 0.2)",
   },
   tagAuto: {
     fontSize: "13px",
     color: "#555",
-    backgroundColor: "#f0f0f0",
-    borderRadius: "12px",
-    padding: "3px 10px",
+    backgroundColor: "#f0ebe5",
+    borderRadius: "14px",
+    padding: "5px 12px",
     display: "inline-flex",
     alignItems: "center",
     gap: "5px",
+    border: "1px solid rgba(45, 27, 27, 0.08)",
   },
   tagCategory: {
     fontSize: "10px",
-    color: "#999",
-    backgroundColor: "#e0e0e0",
+    color: "#888",
+    backgroundColor: "rgba(45, 27, 27, 0.06)",
     borderRadius: "8px",
-    padding: "1px 5px",
+    padding: "2px 6px",
     fontWeight: "600",
     textTransform: "uppercase",
     letterSpacing: "0.03em",
   },
   expandBtn: {
     fontSize: "12px",
-    color: "#0095f6",
+    color: "#A63D3D",
     background: "none",
     border: "none",
     cursor: "pointer",
     padding: "2px 4px",
-    fontWeight: "600",
+    fontWeight: "700",
   },
-  commentList: { flex: 1, padding: "15px", overflowY: "auto" },
-  commentItem: { marginBottom: "10px", fontSize: "14px" },
-  modalActions: { padding: "15px", borderTop: "1px solid #efefef" },
-  commentForm: { display: "flex", borderTop: "1px solid #efefef", padding: "10px" },
-  commentInput: { flex: 1, border: "none", outline: "none" },
+  commentList: { 
+    flex: 1, 
+    padding: "16px 20px", 
+    overflowY: "auto" 
+  },
+  commentItem: { 
+    marginBottom: "12px", 
+    fontSize: "14px",
+    color: "#555",
+  },
+  modalActions: { 
+    padding: "16px 20px", 
+    borderTop: "1px solid rgba(45, 27, 27, 0.08)" 
+  },
+  commentForm: { 
+    display: "flex", 
+    borderTop: "1px solid rgba(45, 27, 27, 0.08)", 
+    padding: "12px 20px",
+    gap: "12px",
+  },
+  commentInput: { 
+    flex: 1, 
+    border: "1px solid rgba(45, 27, 27, 0.12)",
+    outline: "none",
+    borderRadius: "8px",
+    padding: "8px 12px",
+    fontSize: "14px",
+  },
   postBtn: {
     background: "none",
     border: "none",
-    color: "#0095f6",
-    fontWeight: "bold",
+    color: "#A63D3D",
+    fontWeight: "700",
     cursor: "pointer",
+    fontSize: "14px",
   },
 };
 

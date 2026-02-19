@@ -30,7 +30,7 @@ function AppShell() {
     typeof window !== "undefined" ? localStorage.getItem("role") || "user" : "user"
   );
   const location = useLocation();
-  const hideNav = location.pathname === "/fyp";
+  const hideNav = false; // Show navbar on all pages when logged in
   
   useEffect(() => {
     const handleStorageChange = () => {
@@ -79,7 +79,7 @@ function AppShell() {
             textDecoration: "none",
             fontWeight: 900,
             letterSpacing: "0.4px",
-            color: "#f3ede2",
+            color: "#2D1B1B",
           }}
         >
           LOOM

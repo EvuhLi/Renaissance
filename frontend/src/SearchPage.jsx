@@ -1,100 +1,76 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useState } from "react";
 import { Link } from "react-router-dom";
 
 const BACKEND_URL = "http://localhost:3001";
 
 export default function SearchPage() {
   const [query, setQuery] = useState("");
-  const [artists, setArtists] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [users, setUsers] = useState([]);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  useEffect(() => {
-    const loadArtistsFromPosts = async () => {
-      try {
-        setLoading(true);
-        setError("");
-        const res = await fetch(`${BACKEND_URL}/api/posts`);
-        if (!res.ok) throw new Error("Failed to load posts");
-        const posts = await res.json();
+  const handleSearch = async (searchQuery) => {
+    if (!searchQuery.trim()) {
+      setUsers([]);
+      setError("");
+      return;
+    }
 
-        const map = new Map();
-        for (const post of posts) {
-          const postUser = post.user;
-          const username =
-            postUser && typeof postUser === "object" ? postUser.username : postUser;
-          const rawArtistId =
-            post.artistId ||
-            (postUser && typeof postUser === "object" ? postUser._id : undefined);
-          const artistId =
-            rawArtistId && typeof rawArtistId === "object"
-              ? rawArtistId.$oid || String(rawArtistId)
-              : rawArtistId;
+    try {
+      setLoading(true);
+      setError("");
+      const res = await fetch(
+        `${BACKEND_URL}/api/search/users?search=${encodeURIComponent(searchQuery)}&limit=50`
+      );
+      if (!res.ok) throw new Error("Search failed");
+      const data = await res.json();
+      setUsers(Array.isArray(data) ? data : []);
+    } catch (err) {
+      console.error("Search error:", err);
+      setError("Could not search users.");
+      setUsers([]);
+    } finally {
+      setLoading(false);
+    }
+  };
 
-          if (!username) continue;
-
-          const key = (username || "").toLowerCase();
-          if (!map.has(key)) {
-            map.set(key, {
-              username,
-              artistId: artistId || null,
-              posts: 1,
-            });
-          } else {
-            const existing = map.get(key);
-            existing.posts += 1;
-            if (!existing.artistId && artistId) existing.artistId = artistId;
-          }
-        }
-
-        setArtists(Array.from(map.values()).sort((a, b) => a.username.localeCompare(b.username)));
-      } catch (err) {
-        console.error("Search load error:", err);
-        setError("Could not load artists.");
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    loadArtistsFromPosts();
-  }, []);
-
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return artists;
-    return artists.filter((a) => a.username.toLowerCase().includes(q));
-  }, [artists, query]);
+  const handleQueryChange = (e) => {
+    const newQuery = e.target.value;
+    setQuery(newQuery);
+    handleSearch(newQuery);
+  };
 
   return (
     <div style={page}>
       <div style={card}>
         <h1 style={title}>Search Artists</h1>
-        <p style={subtitle}>Frontend-only search for now (from existing posts).</p>
+        <p style={subtitle}>Search all users on Loom.</p>
 
         <input
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={handleQueryChange}
           placeholder="Search by username..."
           style={input}
         />
 
-        {loading && <p style={meta}>Loading artists...</p>}
+        {loading && <p style={meta}>Searching...</p>}
         {error && <p style={errorText}>{error}</p>}
-        {!loading && !error && (
-          <p style={meta}>
-            {filtered.length} result{filtered.length === 1 ? "" : "s"}
-          </p>
+        {!loading && !error && query && (
+          <p style={meta}>{users.length} result{users.length === 1 ? "" : "s"}</p>
         )}
 
         <div style={list}>
-          {filtered.map((artist) => {
-            const to = artist.artistId
-              ? `/profile/${encodeURIComponent(artist.artistId)}`
-              : `/profile`;
+          {users.map((user) => {
+            const to = `/profile/${encodeURIComponent(user._id)}`;
             return (
-              <Link key={`${artist.username}-${artist.artistId || "none"}`} to={to} style={row}>
-                <span style={username}>{artist.username}</span>
-                <span style={count}>{artist.posts} post{artist.posts === 1 ? "" : "s"}</span>
+              <Link key={user._id} to={to} style={row}>
+                <div>
+                  <span style={username}>{user.username}</span>
+                  {user.bio && <p style={bio}>{user.bio}</p>}
+                </div>
+                <span style={count}>
+                  {user.followersCount || 0} follower{user.followersCount === 1 ? "" : "s"}
+                </span>
               </Link>
             );
           })}
@@ -149,4 +125,5 @@ const row = {
 };
 
 const username = { fontWeight: 700 };
+const bio = { margin: "4px 0 0", fontSize: "12px", color: "#999" };
 const count = { color: "#666", fontSize: "12px" };
