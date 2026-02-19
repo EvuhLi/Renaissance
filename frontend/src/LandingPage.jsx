@@ -1,7 +1,7 @@
 import React, { useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 // Make sure the path matches your file structure
-import logoBg from "./assets/MacBook Air - 1.png"; 
+import logoBg from "./assets/pic.png"; 
 
 export default function LandingPage() {
   const navigate = useNavigate();

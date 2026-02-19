@@ -259,17 +259,6 @@ function AppShell() {
                 About
               </Link>
               <Link
-                to="/search"
-                style={{
-                  textDecoration: "none",
-                  fontWeight: 700,
-                  color: "#111",
-                  fontSize: "14px",
-                }}
-              >
-                Search
-              </Link>
-              <Link
                 to="/login"
                 style={{
                   textDecoration: "none",
