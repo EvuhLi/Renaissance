@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { Link } from "react-router-dom";
 
-const BACKEND_URL = "http://localhost:3001";
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:3001";
 
 export default function SearchPage() {
   const [query, setQuery] = useState("");

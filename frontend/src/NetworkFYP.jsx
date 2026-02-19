@@ -11,7 +11,7 @@ import distortedArtImage from "./assets/distorted_art.jpg";
 import collageImage from "./assets/collage.jpg";
 import cfaImage from "./assets/cfa.jpg";
 
-const BACKEND_URL = "http://localhost:3001";
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:3001";
 const INITIAL_VISIBLE_NODES = 28;
 const FETCH_LIMIT = 24;
 const LOAD_MORE_STEP = 16;
