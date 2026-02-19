@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
+﻿import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useForceSimulation } from "./hooks/useForceSimulation";
 import { useArtProtection } from "./hooks/useArtProtection";
@@ -858,14 +858,6 @@ const NetworkFYP = ({ username }) => {
 
       <div style={styles.legendPanel}>
         <p style={styles.legendTitle}>Connection Key</p>
-        <label style={styles.legendRow}>
-          <input
-            type="checkbox"
-            checked={includeFollowedCommunities}
-            onChange={(e) => setIncludeFollowedCommunities(e.target.checked)}
-          />
-          <span style={styles.legendLabel}>Include followed communities in FYP</span>
-        </label>
         {Object.entries(LINK_COLORS).map(([type, color]) => (
           <label key={type} style={styles.legendRow}>
             <input
