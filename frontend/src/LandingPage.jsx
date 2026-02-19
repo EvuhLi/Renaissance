@@ -1,9 +1,18 @@
-import React from "react";
-import { Link } from "react-router-dom";
+import React, { useEffect } from "react";
+import { Link, useNavigate } from "react-router-dom";
 // Make sure the path matches your file structure
 import logoBg from "./assets/MacBook Air - 1.png"; 
 
 export default function LandingPage() {
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    // Redirect logged-in users to the main feed
+    const username = localStorage.getItem("username");
+    if (username && username !== "null" && username !== "undefined") {
+      navigate("/fyp");
+    }
+  }, [navigate]);
   return (
     <div style={styles.pageWrapper}>
       <style>
@@ -55,10 +64,6 @@ export default function LandingPage() {
         </div>
       </main>
 
-      {/* Adding some extra height/content below so you can see the scroll effect */}
-      <section style={styles.infoSection}>
-        <p style={styles.footerText}>SECURED BY SUB-PERCEPTUAL PERTURBATIONS</p>
-      </section>
     </div>
   );
 }
@@ -66,7 +71,7 @@ export default function LandingPage() {
 const styles = {
   pageWrapper: {
     backgroundColor: "#FFFBF3", // Parchment background
-    minHeight: "150vh", // Extra height to enable scrolling
+    minHeight: "100vh", // Full viewport height
     width: "100%",
     position: "relative",
   },
@@ -112,7 +117,7 @@ const styles = {
   ctaContainer: {
     position: "relative",
     zIndex: 5,
-    marginTop: "80vh", // Adjust this to move the button up or down relative to the logo
+    marginTop: "90vh", // Position button lower on the page
   },
   infoSection: {
     height: "50vh",

@@ -12,7 +12,6 @@ const SerendipityBadge = () => (
     <span style={styles.serendipityIcon}>✦</span> Discovered for you
   </div>
 );
-
 // ─── Single full-screen post card ────────────────────────────────────────────
 const FYPCard = ({ post, username, onLike, likedPosts, isProtected }) => {
   const navigate = useNavigate();
@@ -28,7 +27,7 @@ const FYPCard = ({ post, username, onLike, likedPosts, isProtected }) => {
     <div style={styles.card}>
       {/* Artwork */}
       <img
-        src={post.url}
+        src={post.url || ""}
         alt={post.title || "Artwork"}
         style={{
           ...styles.cardImage,
@@ -37,7 +36,7 @@ const FYPCard = ({ post, username, onLike, likedPosts, isProtected }) => {
         draggable={false}
         onContextMenu={(e) => e.preventDefault()}
       />
-
+      
       {/* Gradient overlay */}
       <div style={styles.overlay} />
 
@@ -82,6 +81,7 @@ const FYPCard = ({ post, username, onLike, likedPosts, isProtected }) => {
 const FYP = ({ username }) => {
   const { isProtected } = useArtProtection();
   const [posts, setPosts] = useState([]);
+  // Lazy image loading removed
   const [likedPosts, setLikedPosts] = useState({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -99,7 +99,7 @@ const FYP = ({ username }) => {
       // Use prop or fallback to localStorage to ensure identity is sent
       const activeUser = username || localStorage.getItem("username");
       
-      const params = new URLSearchParams({ limit: 30 });
+      const params = new URLSearchParams({ limit: 12, page: 0 }); // Request 12 posts initially
       if (activeUser && activeUser !== "null" && activeUser !== "undefined") {
         params.set("username", activeUser);
       }
@@ -108,7 +108,22 @@ const FYP = ({ username }) => {
       if (!res.ok) throw new Error(`FYP fetch failed: ${res.status}`);
 
       const data = await res.json();
-      setPosts(data);
+      // Eager-load image URLs for all posts
+      const postsWithImages = await Promise.all(
+        (Array.isArray(data) ? data : []).map(async (p) => {
+          const postId = String(p._id || p.id || "");
+          if (!postId) return p;
+          try {
+            const imgRes = await fetch(`${BACKEND_URL}/api/posts/${postId}/image`);
+            if (!imgRes.ok) return p;
+            const imgData = await imgRes.json();
+            return { ...p, url: imgData?.url || p.url };
+          } catch (e) {
+            return p;
+          }
+        })
+      );
+      setPosts(postsWithImages);
       setCurrentIdx(0);
     } catch (err) {
       console.error("FYP fetch error:", err);
@@ -121,6 +136,8 @@ const FYP = ({ username }) => {
   useEffect(() => {
     fetchFeed();
   }, [fetchFeed]);
+
+  // Lazy loading removed
 
   // ── Notify backend of a like so ML service can learn ───────────────────────
   const recordInteraction = useCallback(async (postId, type) => {
@@ -183,7 +200,14 @@ const FYP = ({ username }) => {
       };
 
       // Replace local post with server version to avoid drift
-      setPosts(prev => prev.map(p => (String(p._id || p.id) === postId ? norm : p)));
+      // But preserve the loaded image URL if it exists
+      setPosts(prev => prev.map(p => {
+        if (String(p._id || p.id) === postId) {
+          const currentUrl = p.url; // Preserve current URL
+          return { ...norm, url: currentUrl || norm.url };
+        }
+        return p;
+      }));
 
       // Update likedPosts based on server likedBy
       const isNowLiked = norm.likedBy?.map(u => u.toLowerCase()).includes(activeUser?.toLowerCase());
@@ -502,17 +526,24 @@ const styles = {
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "#000",
-    gap: "16px",
+    gap: "24px",
   },
   spinner: {
-    width: "36px",
-    height: "36px",
-    border: "3px solid rgba(255,255,255,0.15)",
+    width: "48px",
+    height: "48px",
+    border: "3px solid rgba(255,255,255,0.1)",
     borderTop: "3px solid #a78bfa",
     borderRadius: "50%",
     animation: "spin 0.8s linear infinite",
   },
-  loadingText: { color: "rgba(255,255,255,0.5)", fontSize: "14px", margin: 0 },
+  loadingText: { 
+    color: "rgba(255,255,255,0.7)", 
+    fontSize: "16px", 
+    margin: 0,
+    fontWeight: "500",
+    letterSpacing: "0.02em",
+    textAlign: "center",
+  },
   errorText: { color: "#f87171", fontSize: "15px", margin: 0 },
   emptyText: { color: "rgba(255,255,255,0.5)", fontSize: "15px", margin: 0 },
   retryBtn: {

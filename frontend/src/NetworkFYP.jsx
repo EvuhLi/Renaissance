@@ -293,8 +293,23 @@ const NetworkFYP = ({ username }) => {
       if (!res.ok) throw new Error(`FYP fetch failed: ${res.status}`);
 
       const data = await res.json();
-      setAllPosts(data);
-      setPosts(data.slice(0, INITIAL_VISIBLE_NODES));
+      // Eager-load image URLs for network nodes
+      const postsWithImages = await Promise.all(
+        (Array.isArray(data) ? data : []).map(async (p) => {
+          const postId = String(p._id || p.id || "");
+          if (!postId) return p;
+          try {
+            const imgRes = await fetch(`${BACKEND_URL}/api/posts/${postId}/image`);
+            if (!imgRes.ok) return p;
+            const imgData = await imgRes.json();
+            return { ...p, url: imgData?.url || p.url };
+          } catch (e) {
+            return p;
+          }
+        })
+      );
+      setAllPosts(postsWithImages);
+      setPosts(postsWithImages.slice(0, INITIAL_VISIBLE_NODES));
       
       // Mark liked posts
       const liked = {};

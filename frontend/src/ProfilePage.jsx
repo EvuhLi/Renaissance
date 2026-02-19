@@ -145,6 +145,9 @@ const ProfilePage = () => {
   const [viewer, setViewer] = useState(null);
   const [posts, setPosts] = useState([]);
   const [isPostsLoading, setIsPostsLoading] = useState(true);
+  const [isBioModalOpen, setIsBioModalOpen] = useState(false);
+  const [bioEditValue, setBioEditValue] = useState("");
+  const [isUpdatingBio, setIsUpdatingBio] = useState(false);
 
   const defaultUser = {
     username: storedUsername || "loom_artist_01",
@@ -267,6 +270,23 @@ const ProfilePage = () => {
 
     const loadAccountAndPosts = async () => {
       try {
+        const buildPostsUrl = (artistIdValue, usernameValue) => {
+          const params = new URLSearchParams();
+          if (artistIdValue) params.set("artistId", String(artistIdValue));
+          if (usernameValue) params.set("username", String(usernameValue));
+          params.set("limit", "36");
+          return `${BACKEND_URL}/api/posts${params.toString() ? `?${params}` : ""}`;
+        };
+
+        const initialArtistId = normalizeId(activeArtistId || resolvedArtistId);
+        const initialUsername = String(storedUsername || defaultUser.username || "")
+          .trim()
+          .toLowerCase();
+        const initialPostsUrl = buildPostsUrl(initialArtistId, initialUsername);
+        const initialPostsPromise = fetch(initialPostsUrl)
+          .then((res) => (res.ok ? res.json() : []))
+          .catch(() => []);
+
         // PARALLEL FETCH: Fetch account and viewer in parallel to reduce waterfall latency
         const accountUrl = activeArtistId
           ? `${BACKEND_URL}/api/accounts/id/${encodeURIComponent(activeArtistId)}`
@@ -282,9 +302,18 @@ const ProfilePage = () => {
               });
 
         // Fetch both account and viewer requests in parallel
+        const accountPromise = fetch(accountUrl);
+        const viewerPromise = viewerFetchPromise;
+
+        const initialPosts = await initialPostsPromise;
+        if (Array.isArray(initialPosts)) {
+          setPosts(initialPosts);
+          setIsPostsLoading(false);
+        }
+
         const [accountRes, viewerData] = await Promise.all([
-          fetch(accountUrl),
-          viewerFetchPromise,
+          accountPromise,
+          viewerPromise,
         ]);
 
         let loadedUser = null;
@@ -307,20 +336,19 @@ const ProfilePage = () => {
           .trim()
           .toLowerCase();
 
-        const params = new URLSearchParams();
-        if (targetArtistId) params.set("artistId", String(targetArtistId));
-        if (targetUsername) params.set("username", targetUsername);
-        params.set("limit", "36");
-
         const reqSeq = ++postsReqSeqRef.current;
-        const postsUrl = `${BACKEND_URL}/api/posts${params.toString() ? `?${params}` : ""}`;
-        const postsRes = await fetch(postsUrl);
-        if (!postsRes.ok) {
-          console.error("Failed to fetch posts:", postsRes.status, postsRes.statusText);
-          if (reqSeq === postsReqSeqRef.current) setIsPostsLoading(false);
-          return;
+        const finalPostsUrl = buildPostsUrl(targetArtistId, targetUsername);
+        let postsData = initialPosts;
+
+        if (finalPostsUrl !== initialPostsUrl) {
+          const postsRes = await fetch(finalPostsUrl);
+          if (!postsRes.ok) {
+            console.error("Failed to fetch posts:", postsRes.status, postsRes.statusText);
+            if (reqSeq === postsReqSeqRef.current) setIsPostsLoading(false);
+            return;
+          }
+          postsData = await postsRes.json();
         }
-        const postsData = await postsRes.json();
         if (reqSeq !== postsReqSeqRef.current) return;
         setPosts(Array.isArray(postsData) ? postsData : []);
         setIsPostsLoading(false);
@@ -419,6 +447,48 @@ const ProfilePage = () => {
       }
     };
     reader.readAsDataURL(newProfilePicFile);
+  };
+
+  const handleOpenBioModal = () => {
+    setBioEditValue(user?.bio || "");
+    setIsBioModalOpen(true);
+  };
+
+  const handleCloseBioModal = () => {
+    setIsBioModalOpen(false);
+    setBioEditValue("");
+  };
+
+  const handleSaveBio = async () => {
+    if (!isOwnProfile) {
+      alert("You can only edit your own bio.");
+      return;
+    }
+    setIsUpdatingBio(true);
+    try {
+      const response = await fetch(`${BACKEND_URL}/api/accounts`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username: currentUser?.username,
+          bio: bioEditValue,
+          followersCount: user?.followersCount || 0,
+        }),
+      });
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error || "Failed to update bio");
+      }
+      const updatedUser = await response.json();
+      setUser(updatedUser);
+      setViewer(updatedUser);
+      handleCloseBioModal();
+    } catch (err) {
+      console.error("Bio update failed:", err);
+      alert("Failed to update bio: " + err.message);
+    } finally {
+      setIsUpdatingBio(false);
+    }
   };
 
   const handleCreatePost = async () => {
@@ -689,45 +759,6 @@ const ProfilePage = () => {
             `}
       </style>
 
-      {!user && (
-        <section style={styles.stickyNote}>
-          <div style={styles.stickyTape}></div>
-          <h3 style={styles.handwrittenTitle}>Join the Studio</h3>
-          <form style={styles.accountForm} onSubmit={handleCreateAccount}>
-            <input
-              type="text"
-              placeholder="Username"
-              value={newAccountUsername}
-              onChange={(e) => setNewAccountUsername(e.target.value)}
-              style={styles.paperInput}
-              required
-            />
-            <div style={styles.row}>
-              <input
-                type="text"
-                placeholder="Bio..."
-                value={newAccountBio}
-                onChange={(e) => setNewAccountBio(e.target.value)}
-                style={styles.paperInput}
-              />
-              <input
-                type="number"
-                placeholder="Followers"
-                value={newAccountFollowers}
-                onChange={(e) => setNewAccountFollowers(e.target.value)}
-                style={styles.paperInput}
-              />
-            </div>
-            <button type="submit" style={styles.actionButton} disabled={isCreatingAccount}>
-              {isCreatingAccount ? " sketching..." : "Create Profile"}
-            </button>
-          </form>
-          {accountError && (
-            <p style={{ color: "#b42318", marginTop: "10px" }}>{accountError}</p>
-          )}
-        </section>
-      )}
-
       <div style={styles.mainContainer}>
         <header style={styles.scrapbookHeader}>
           <div style={styles.profileVisual}>
@@ -792,9 +823,24 @@ const ProfilePage = () => {
             </div>
 
             <div style={styles.bioBox}>
-              <h4 style={styles.bioTitle}>About Me</h4>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <h4 style={styles.bioTitle}>About Me</h4>
+                {isOwnProfile && (
+                  <button
+                    onClick={handleOpenBioModal}
+                    style={{
+                      background: "none",
+                      border: "none",
+                      cursor: "pointer",
+                      padding: "4px",
+                    }}
+                    title="Edit bio"
+                  >
+                    ✏️
+                  </button>
+                )}
+              </div>
               <p style={styles.bioText}>{user?.bio || defaultUser.bio}</p>
-              <span style={styles.signature}>xoxo, {user?.username || "Artist"}</span>
             </div>
 
             {profileError && (
@@ -808,10 +854,6 @@ const ProfilePage = () => {
               onChange={handleFileChange}
               accept="image/*"
             />
-          </div>
-          <div style={styles.statsRow}>
-            <span><strong>{visiblePosts.length}</strong> drawings</span>
-            <span><strong>{profileOwner.followersCount}</strong> followers</span>
           </div>
           <p style={styles.bio}>{profileOwner.bio}</p>
         </header>
@@ -840,12 +882,12 @@ const ProfilePage = () => {
                   });
                   if (!response.ok) throw new Error("Failed to add comment");
                   const updatedPost = await response.json();
-                  // Update posts list and modal
+                  // Update posts list and modal - merge with existing post to preserve all fields
                   setPosts((prev) =>
-                    prev.map((p) => (normalizeId(p._id || p.id) === pid ? updatedPost : p))
+                    prev.map((p) => (normalizeId(p._id || p.id) === pid ? { ...p, ...updatedPost } : p))
                   );
                   setSelectedPost((prev) =>
-                    prev && normalizeId(prev._id || prev.id) === pid ? updatedPost : prev
+                    prev && normalizeId(prev._id || prev.id) === pid ? { ...prev, ...updatedPost } : prev
                   );
                   return updatedPost;
                 } catch (err) {
@@ -1019,6 +1061,96 @@ const ProfilePage = () => {
                 disabled={!newProfilePicFile}
               >
                 Save Photo
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bio Edit Modal */}
+      {isBioModalOpen && (
+        <div style={styles.overlay} onClick={handleCloseBioModal}>
+          <div style={styles.modalCard} onClick={(e) => e.stopPropagation()}>
+            <div style={styles.modalHeader}>
+              <h3 style={{ margin: 0, color: "#2D1B1B", fontFamily: "'Lato', sans-serif" }}>
+                Edit About Me
+              </h3>
+              <button
+                onClick={handleCloseBioModal}
+                style={{
+                  background: "none",
+                  border: "none",
+                  fontSize: "24px",
+                  cursor: "pointer",
+                  padding: "0",
+                  color: "#666",
+                }}
+              >
+                ×
+              </button>
+            </div>
+            <div style={{ padding: "20px" }}>
+              <textarea
+                value={bioEditValue}
+                onChange={(e) => setBioEditValue(e.target.value)}
+                placeholder="Write your bio here..."
+                style={{
+                  width: "100%",
+                  minHeight: "120px",
+                  padding: "12px",
+                  border: "1px solid #ddd",
+                  borderRadius: "4px",
+                  fontFamily: "'Lato', sans-serif",
+                  fontSize: "14px",
+                  resize: "vertical",
+                  boxSizing: "border-box",
+                }}
+                maxLength={500}
+              />
+              <p style={{ fontSize: "12px", color: "#888", marginTop: "8px", marginBottom: "0" }}>
+                {bioEditValue.length}/500
+              </p>
+            </div>
+            <div
+              style={{
+                padding: "16px 20px",
+                display: "flex",
+                gap: "10px",
+                justifyContent: "flex-end",
+                borderTop: "1px solid #eee",
+              }}
+            >
+              <button
+                onClick={handleCloseBioModal}
+                disabled={isUpdatingBio}
+                style={{
+                  padding: "8px 16px",
+                  border: "1px solid #ddd",
+                  background: "#f5f5f5",
+                  color: "#333",
+                  borderRadius: "4px",
+                  cursor: "pointer",
+                  fontFamily: "'Lato', sans-serif",
+                  opacity: isUpdatingBio ? 0.6 : 1,
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveBio}
+                disabled={isUpdatingBio}
+                style={{
+                  padding: "8px 16px",
+                  border: "none",
+                  background: "#A63D3D",
+                  color: "#fff",
+                  borderRadius: "4px",
+                  cursor: "pointer",
+                  fontFamily: "'Lato', sans-serif",
+                  opacity: isUpdatingBio ? 0.6 : 1,
+                }}
+              >
+                {isUpdatingBio ? "Saving..." : "Save"}
               </button>
             </div>
           </div>

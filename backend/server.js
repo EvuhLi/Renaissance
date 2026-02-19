@@ -2,6 +2,7 @@ require("dotenv").config();
 
 const express = require("express");
 const cors = require("cors");
+const compression = require("compression");
 const mongoose = require("mongoose");
 const nodeFetch = require("node-fetch");
 const FormData = require("form-data");
@@ -16,6 +17,7 @@ const { runBehaviorAnalysisBatch } = require("./services/behaviorAnalysis");
 const app = express();
 
 app.use(cors());
+app.use(compression({ level: 6, threshold: 1024 })); // Gzip responses > 1KB
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
@@ -258,28 +260,30 @@ app.get("/api/accounts/id/:id", async (req, res) => {
 // FYP RECOMMENDATIONS
 // =============================
 
+// Fast FYP endpoint - returns posts with images (gzipped)
 app.get("/api/fyp", async (req, res) => {
   const t0 = Date.now();
   try {
-    const limit = Math.min(parseInt(req.query.limit) || 24, 60);
-    const normalizedUsername = String(req.query.username || "").trim().toLowerCase();
+    const limit = Math.min(parseInt(req.query.limit) || 12, 30); // Reduced default to 12
+    const page = Math.max(parseInt(req.query.page) || 0, 0);
+    const skip = page * limit;
 
-    // CRITICAL: Fetch only specific fields to minimize document scan time
-    // Use .select() to only retrieve fields we need, avoiding full document retrieval
+    // Fetch posts WITHOUT images initially - much faster
     const t_query = Date.now();
     const posts = await Post.find(
       {},
-      "_id artistId user postCategory postType title description tags mlTags medium previewUrl likes likedBy date postType"
+      "_id artistId user postCategory postType title description tags medium likes likedBy date mlTags url"
     )
       .sort({ date: -1 })
-      .limit(Math.min(limit * 2, 80))
-      .maxTimeMS(8000)
+      .skip(skip)
+      .limit(limit)
+      .maxTimeMS(5000)
       .lean();
-    console.log(`[FYP] Post.find: ${Date.now() - t_query}ms`);
+    console.log(`[FYP] Query time: ${Date.now() - t_query}ms, posts: ${posts.length}`);
 
     if (!posts.length) return res.json([]);
 
-    // Lightweight serialization for FYP
+    // Serialize posts WITHOUT images - frontend will fetch them on-demand
     const serializedPosts = posts.map((p) => ({
       _id: p._id.toString(),
       artistId: p.artistId?.toString(),
@@ -289,82 +293,50 @@ app.get("/api/fyp", async (req, res) => {
       title: p.title,
       description: p.description,
       tags: p.tags || [],
-      mlTags: p.mlTags || {},
       medium: p.medium,
-      url: p.previewUrl || "",
+      url: p.url || "",
+      mlTags: p.mlTags || {}, // Include ML tags for network visualization
       likes: p.likes || 0,
       likedBy: p.likedBy || [],
       date: p.date,
     }));
 
-    // Re-enable ML recommendation ranking (with graceful fallback).
-    try {
-      const viewer = normalizedUsername
-        ? await Account.findOne(
-            { username: new RegExp(`^${escapeRegex(normalizedUsername)}$`, "i") },
-            "_id following"
-          ).lean()
-        : null;
-
-      const followedArtistIds = Array.isArray(viewer?.following)
-        ? viewer.following.map((id) => String(id))
-        : [];
-
-      const creatorIds = [
-        ...new Set(
-          serializedPosts
-            .map((p) => String(p.artistId || ""))
-            .filter((id) => mongoose.Types.ObjectId.isValid(id))
-        ),
-      ];
-
-      let creatorBehaviorStats = {};
-      if (creatorIds.length) {
-        const creatorAccounts = await Account.find(
-          { _id: { $in: creatorIds.map((id) => new mongoose.Types.ObjectId(id)) } },
-          "_id botScore behaviorFeatures"
-        ).lean();
-        creatorBehaviorStats = creatorAccounts.reduce((acc, a) => {
-          acc[String(a._id)] = {
-            bot_score: Number(a?.botScore ?? a?.behaviorFeatures?.botScore ?? 0),
-            behavior_features: a?.behaviorFeatures || {},
-          };
-          return acc;
-        }, {});
-      }
-
-      const mlRes = await nodeFetch(`${ML_SERVICE_URL}/recommendation/recommend`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          posts: serializedPosts,
-          user_id: normalizedUsername || null,
-          followed_artist_ids: followedArtistIds,
-          creator_behavior_stats: creatorBehaviorStats,
-          top_n: limit,
-        }),
-        timeout: 5000,
-      });
-
-      if (mlRes.ok) {
-        const ranked = await mlRes.json();
-        if (Array.isArray(ranked) && ranked.length) {
-          console.log(`[FYP] ML recommend: ${Date.now() - t0}ms`);
-          return res.json(ranked.slice(0, limit));
-        }
-      } else {
-        const detail = await mlRes.text().catch(() => "");
-        console.warn("FYP ML recommend non-OK:", mlRes.status, detail);
-      }
-    } catch (mlErr) {
-      console.warn("FYP ML recommend failed, using local fallback:", mlErr.message || mlErr);
-    }
-
     console.log(`[FYP] Total time: ${Date.now() - t0}ms`);
-    return res.json(serializedPosts.slice(0, limit));
+    res.set("Cache-Control", "public, max-age=15");
+    return res.json(serializedPosts);
   } catch (err) {
     console.error("FYP Error:", err.message);
     res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+// Endpoint to fetch image for a specific post
+app.get("/api/posts/:id/image", async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ error: "Invalid post ID" });
+    }
+    
+    const post = await Post.findById(id)
+      .select("_id url")
+      .lean()
+      .maxTimeMS(2000);
+    
+    if (!post || !post.url) {
+      return res.status(404).json({ error: "Post not found" });
+    }
+    
+    // Return just the image URL - gzip compression handles the rest
+    res.set("Cache-Control", "public, max-age=604800"); // 7 day cache
+    res.json({
+      _id: post._id.toString(),
+      url: post.url,
+    });
+  } catch (err) {
+    console.error("Image fetch error:", err.message);
+    res.status(500).json({ error: "Failed to fetch image" });
   }
 });
 
@@ -609,6 +581,58 @@ app.get("/api/posts/:id/full", async (req, res) => {
 });
 
 // =============================
+// GET POST COMMENTS (PAGINATED)
+// =============================
+// Fast endpoint to fetch paginated comments for a post
+app.get("/api/posts/:id/comments", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const page = Math.max(0, Number(req.query.page) || 0);
+    const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 15));
+    const skip = page * limit;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ error: "Invalid post ID" });
+    }
+
+    // Use aggregation to fetch only the comments slice we need
+    const result = await Post.aggregate([
+      { $match: { _id: new mongoose.Types.ObjectId(id) } },
+      { $project: { comments: 1 } },
+      {
+        $facet: {
+          metadata: [
+            { $project: { count: { $size: { $ifNull: ["$comments", []] } } } }
+          ],
+          comments: [
+            { $unwind: "$comments" },
+            { $replaceRoot: { newRoot: "$comments" } },
+            { $sort: { createdAt: -1 } },
+            { $skip: skip },
+            { $limit: limit }
+          ]
+        }
+      }
+    ]);
+
+    const totalCount = result[0]?.metadata[0]?.count || 0;
+    const comments = result[0]?.comments || [];
+
+    res.json({
+      comments,
+      total: totalCount,
+      page,
+      limit,
+      hasMore: skip + limit < totalCount
+    });
+  } catch (err) {
+    console.error("Get Comments Error:", err);
+    res.status(500).json({ error: "Failed to fetch comments" });
+  }
+});
+
+
+// =============================
 // LIKE POST
 // =============================
 
@@ -834,58 +858,68 @@ app.post("/api/posts/:id/comment", async (req, res) => {
       return res.status(400).json({ error: "username and text required" });
     }
 
-    const post = await Post.findById(id);
-    if (!post) return res.status(404).json({ error: "Post not found" });
-
     const comment = {
       user: username,
       text: String(text),
       createdAt: new Date(),
     };
 
+    // Add comment and return the full updated post
     const updated = await Post.findByIdAndUpdate(
       id,
       { $push: { comments: comment } },
       { new: true }
     );
 
-    try {
-      const allPosts = await Post.find({}, "_id").lean();
-      const allPostIds = allPosts.map((p) => p._id.toString());
-      await nodeFetch(`${ML_SERVICE_URL}/recommendation/interaction`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          user_id: String(username).toLowerCase(),
-          post_id: String(id),
-          interaction_type: "comment",
-          all_post_ids: allPostIds,
-        }),
-      });
-    } catch (mlErr) {
-      console.warn("Comment interaction tracking failed:", mlErr.message || mlErr);
+    if (!updated) {
+      return res.status(404).json({ error: "Post not found" });
     }
 
-    const commentAccount = await Account.findOne(
-      { username: new RegExp(`^${escapeRegex(String(username))}$`, "i") },
-      "_id username"
-    ).lean();
-    const parentTimestamp = post?.date ? new Date(post.date) : null;
-    await logActivityEvent({
-      req,
-      eventType: "comment_create",
-      account: commentAccount,
-      username,
-      post: updated,
-      postType: "reply",
-      inReplyToPostId: post?._id || null,
-      originalPostTimestamp: parentTimestamp,
-      replyTimestamp: comment.createdAt,
-      latencyMs: parentTimestamp ? comment.createdAt.getTime() - parentTimestamp.getTime() : null,
-      metadata: { textLength: String(text).length },
-    });
+    // Return the full post as plain JSON so frontend gets all fields
+    res.json(updated.toObject ? updated.toObject() : updated);
 
-    res.json(updated);
+    // Non-blocking operations happen after response
+    // Do these in background without waiting
+    (async () => {
+      try {
+        // Get post once for tracking (lightweight)
+        const post = await Post.findById(id, "date").lean();
+        
+        // Fire ML interaction in background (don't wait for it)
+        nodeFetch(`${ML_SERVICE_URL}/recommendation/interaction`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            user_id: String(username).toLowerCase(),
+            post_id: String(id),
+            interaction_type: "comment",
+          }),
+        }).catch(err => console.warn("ML tracking failed:", err.message));
+
+        // Log activity in background
+        const commentAccount = await Account.findOne(
+          { username: new RegExp(`^${escapeRegex(String(username))}$`, "i") },
+          "_id username"
+        ).lean();
+        
+        const parentTimestamp = post?.date ? new Date(post.date) : null;
+        await logActivityEvent({
+          req,
+          eventType: "comment_create",
+          account: commentAccount,
+          username,
+          post: updated,
+          postType: "reply",
+          inReplyToPostId: post?._id || null,
+          originalPostTimestamp: parentTimestamp,
+          replyTimestamp: comment.createdAt,
+          latencyMs: parentTimestamp ? comment.createdAt.getTime() - parentTimestamp.getTime() : null,
+          metadata: { textLength: String(text).length },
+        }).catch(err => console.warn("Activity logging failed:", err.message));
+      } catch (bgErr) {
+        console.warn("Background operation error:", bgErr.message);
+      }
+    })();
   } catch (err) {
     console.error("Add Comment Error:", err);
     res.status(500).json({ error: "Internal Server Error" });
@@ -1250,6 +1284,29 @@ app.post("/api/behavior/recompute", async (req, res) => {
 app.listen(PORT, () =>
   console.log(`🚀 Backend running on http://localhost:${PORT}`)
 );
+
+// Public search users endpoint
+app.get("/api/search/users", async (req, res) => {
+  try {
+    const search = String(req.query.search || "").trim();
+    const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 50));
+
+    const query = { role: { $ne: "admin" } }; // Exclude admins
+    if (search) {
+      query.username = new RegExp(escapeRegex(search), "i");
+    }
+
+    const users = await Account.find(query, "_id username bio followersCount createdAt")
+      .sort({ username: 1 })
+      .limit(limit)
+      .lean();
+
+    res.json(users);
+  } catch (err) {
+    console.error("User search error:", err);
+    res.status(500).json({ error: "Search failed" });
+  }
+});
 
 if ((process.env.BEHAVIOR_ANALYSIS_ENABLED || "true").toLowerCase() !== "false") {
   const intervalMs = Math.max(

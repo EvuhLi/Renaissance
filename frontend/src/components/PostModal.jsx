@@ -13,7 +13,7 @@ const PostModal = ({ post, username, onClose, onLike, onComment, isLiked, isProt
     : [];
   const slides = [...(post.url ? [post.url] : []), ...processSlides];
   const safeSlideIndex = Math.min(Math.max(slideIndex, 0), Math.max(slides.length - 1, 0));
-  const currentSlide = slides[safeSlideIndex] || post.url;
+  const currentSlide = slides[safeSlideIndex] || post.url || null;
   useEffect(() => {
     setSlideIndex(0);
   }, [post?._id, post?.id]);
@@ -52,16 +52,18 @@ const PostModal = ({ post, username, onClose, onLike, onComment, isLiked, isProt
         <div style={styles.content}>
           {/* Image */}
           <div style={styles.imageSection}>
-            <img
-              src={currentSlide}
-              alt={post.title || "Artwork"}
-              style={{
-                ...styles.image,
-                filter: isProtected ? "blur(26px)" : "none",
-              }}
-              draggable={false}
-              onContextMenu={(e) => e.preventDefault()}
-            />
+            {currentSlide && (
+              <img
+                src={currentSlide}
+                alt={post.title || "Artwork"}
+                style={{
+                  ...styles.image,
+                  filter: isProtected ? "blur(26px)" : "none",
+                }}
+                draggable={false}
+                onContextMenu={(e) => e.preventDefault()}
+              />
+            )}
             {slides.length > 1 && (
               <>
                 <button
