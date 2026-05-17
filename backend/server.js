@@ -135,25 +135,46 @@ if (!MONGODB_URI) {
   console.error("❌ Missing MONGODB_URI env var");
 }
 
+let _connectionPromise = null;
 let _mongooseReady = false;
-if (MONGODB_URI) {
-  mongoose
-    .connect(MONGODB_URI, {
-      maxPoolSize: 10,
-      minPoolSize: 0,
-      serverSelectionTimeoutMS: 5000,
-      socketTimeoutMS: 45000,
-    })
-    .then(async () => {
-      if (!_mongooseReady) {
-        _mongooseReady = true;
-        await ensureAdminAccount();
-        await ensureIndexes();
-      }
-      console.log("MongoDB connected");
-    })
-    .catch((err) => console.error("MongoDB connection error:", err));
+
+function getConnection() {
+  if (!MONGODB_URI) return Promise.reject(new Error("Missing MONGODB_URI"));
+  if (mongoose.connection.readyState === 1) return Promise.resolve();
+  if (!_connectionPromise) {
+    _connectionPromise = mongoose
+      .connect(MONGODB_URI, {
+        maxPoolSize: 10,
+        minPoolSize: 0,
+        serverSelectionTimeoutMS: 8000,
+        socketTimeoutMS: 45000,
+      })
+      .then(async () => {
+        if (!_mongooseReady) {
+          _mongooseReady = true;
+          await ensureAdminAccount();
+          await ensureIndexes();
+        }
+        console.log("MongoDB connected");
+      })
+      .catch((err) => {
+        _connectionPromise = null;
+        console.error("MongoDB connection error:", err);
+        throw err;
+      });
+  }
+  return _connectionPromise;
 }
+
+// Ensure DB is connected before every API request
+app.use("/api", async (req, res, next) => {
+  try {
+    await getConnection();
+    next();
+  } catch (err) {
+    res.status(503).json({ error: "Database unavailable, please try again" });
+  }
+});
 
 // =============================
 // AI DETECTION PROXY
